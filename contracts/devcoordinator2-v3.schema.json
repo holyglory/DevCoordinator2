@@ -9580,6 +9580,21 @@
                   "null"
                 ]
               },
+              "cleanup_receipt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CleanupReceiptCandidate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "details_omitted": {
+                "default": false,
+                "type": "boolean"
+              },
               "head": {
                 "type": [
                   "string",
@@ -9734,6 +9749,10 @@
               "can_remove": {
                 "type": "boolean"
               },
+              "details_omitted": {
+                "default": false,
+                "type": "boolean"
+              },
               "dirty": {
                 "type": [
                   "boolean",
@@ -9846,6 +9865,22 @@
               "protection_reasons",
               "can_remove",
               "locations"
+            ],
+            "type": "object"
+          },
+          "CleanupReceiptCandidate": {
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id",
+              "worktree_id"
             ],
             "type": "object"
           },
@@ -10065,6 +10100,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "details_omitted": {
+                "default": false,
+                "type": "boolean"
               },
               "error": {
                 "type": [
@@ -10648,6 +10687,21 @@
                   "null"
                 ]
               },
+              "cleanup_receipt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CleanupReceiptCandidate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "details_omitted": {
+                "default": false,
+                "type": "boolean"
+              },
               "head": {
                 "type": [
                   "string",
@@ -10802,6 +10856,10 @@
               "can_remove": {
                 "type": "boolean"
               },
+              "details_omitted": {
+                "default": false,
+                "type": "boolean"
+              },
               "dirty": {
                 "type": [
                   "boolean",
@@ -10914,6 +10972,22 @@
               "protection_reasons",
               "can_remove",
               "locations"
+            ],
+            "type": "object"
+          },
+          "CleanupReceiptCandidate": {
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id",
+              "worktree_id"
             ],
             "type": "object"
           },
@@ -11133,6 +11207,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "details_omitted": {
+                "default": false,
+                "type": "boolean"
               },
               "error": {
                 "type": [
@@ -11476,6 +11554,21 @@
                   "null"
                 ]
               },
+              "cleanup_receipt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CleanupReceiptCandidate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "details_omitted": {
+                "default": false,
+                "type": "boolean"
+              },
               "head": {
                 "type": [
                   "string",
@@ -11592,6 +11685,22 @@
             ],
             "type": "object"
           },
+          "CleanupReceiptCandidate": {
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id",
+              "worktree_id"
+            ],
+            "type": "object"
+          },
           "MergeProof": {
             "additionalProperties": false,
             "properties": {
@@ -11673,6 +11782,301 @@
           "branches"
         ],
         "title": "BranchPage",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.branch.get"
+          }
+        ]
+      },
+      "description": "Read one exact authorized cached branch and its intent.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "branch_id"
+        ],
+        "title": "BranchItem",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "branch_id"
+            ],
+            "title": "BranchItem",
+            "type": "object"
+          },
+          "name": "project_branch_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.branch.get",
+      "outputSchema": {
+        "$defs": {
+          "CleanupReceiptCandidate": {
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id",
+              "worktree_id"
+            ],
+            "type": "object"
+          },
+          "MergeProof": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "merged_into": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "head_sha",
+              "merged_into",
+              "observed_at"
+            ],
+            "type": "object"
+          },
+          "PullRequest": {
+            "additionalProperties": false,
+            "properties": {
+              "head_sha": {
+                "type": "string"
+              },
+              "merge_commit_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "merged": {
+                "type": "boolean"
+              },
+              "number": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "number",
+              "url",
+              "state",
+              "merged",
+              "head_sha"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "branch_name": {
+            "type": "string"
+          },
+          "build_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cleanup_receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CleanupReceiptCandidate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "details_omitted": {
+            "default": false,
+            "type": "boolean"
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "local_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "local_present": {
+            "type": "boolean"
+          },
+          "merge_proof": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/MergeProof"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pr": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PullRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remote_present": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upstream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "branch_id",
+          "repository_id",
+          "branch_name",
+          "local_present",
+          "lifecycle",
+          "revision",
+          "worktree_ids"
+        ],
+        "title": "Branch",
         "type": "object"
       },
       "policy": {
@@ -11828,6 +12232,10 @@
                 ]
               },
               "can_remove": {
+                "type": "boolean"
+              },
+              "details_omitted": {
+                "default": false,
                 "type": "boolean"
               },
               "dirty": {
@@ -12000,6 +12408,268 @@
           "checkouts"
         ],
         "title": "CheckoutPage",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.get"
+          }
+        ]
+      },
+      "description": "Read one exact authorized cached checkout and its intent.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "worktree_id"
+        ],
+        "title": "CheckoutItem",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "worktree_id"
+            ],
+            "title": "CheckoutItem",
+            "type": "object"
+          },
+          "name": "project_checkout_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.get",
+      "outputSchema": {
+        "$defs": {
+          "Location": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "relative_path": {
+                "type": "string"
+              },
+              "root_kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "relative_path",
+              "root_kind"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "absolute_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "branch_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "build_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "can_remove": {
+            "type": "boolean"
+          },
+          "details_omitted": {
+            "default": false,
+            "type": "boolean"
+          },
+          "dirty": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "exists": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "local_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "locations": {
+            "items": {
+              "$ref": "#/$defs/Location"
+            },
+            "type": "array"
+          },
+          "next_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protection_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "role": {
+            "type": "string"
+          },
+          "root_kind": {
+            "type": "string"
+          },
+          "source_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worktree_id",
+          "repository_id",
+          "relative_path",
+          "root_kind",
+          "role",
+          "lifecycle",
+          "revision",
+          "artifact_ids",
+          "protection_reasons",
+          "can_remove",
+          "locations"
+        ],
+        "title": "Checkout",
         "type": "object"
       },
       "policy": {
@@ -12700,6 +13370,22 @@
       "name": "project.branch.update",
       "outputSchema": {
         "$defs": {
+          "CleanupReceiptCandidate": {
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id",
+              "worktree_id"
+            ],
+            "type": "object"
+          },
           "MergeProof": {
             "additionalProperties": false,
             "properties": {
@@ -12777,6 +13463,21 @@
               "integer",
               "null"
             ]
+          },
+          "cleanup_receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CleanupReceiptCandidate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "details_omitted": {
+            "default": false,
+            "type": "boolean"
           },
           "head": {
             "type": [
@@ -13381,6 +14082,10 @@
             ]
           },
           "can_remove": {
+            "type": "boolean"
+          },
+          "details_omitted": {
+            "default": false,
             "type": "boolean"
           },
           "dirty": {
@@ -15295,6 +16000,576 @@
         "idempotent": true,
         "role": "operator",
         "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.relocate.prepare"
+          }
+        ]
+      },
+      "description": "Prepare one trusted local checkout relocation while preserving its identities.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_checkout_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "new_path": {
+            "type": "string"
+          },
+          "old_path": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "description": "The registered physical repository identity.",
+            "type": "string"
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "repository_id",
+          "worktree_id",
+          "old_path",
+          "new_path",
+          "expected_checkout_revision",
+          "idempotency_key"
+        ],
+        "title": "Prepare",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_checkout_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "new_path": {
+                "type": "string"
+              },
+              "old_path": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "description": "The registered physical repository identity.",
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "repository_id",
+              "worktree_id",
+              "old_path",
+              "new_path",
+              "expected_checkout_revision",
+              "idempotency_key"
+            ],
+            "title": "Prepare",
+            "type": "object"
+          },
+          "name": "project_checkout_relocate_prepare",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.relocate.prepare",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "checkout_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "committed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "new_path": {
+            "type": "string"
+          },
+          "old_path": {
+            "type": "string"
+          },
+          "prepared_at": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "relocation_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relocation_id",
+          "project_id",
+          "repository_id",
+          "worktree_id",
+          "old_path",
+          "new_path",
+          "fingerprint",
+          "state",
+          "checkout_revision",
+          "prepared_at"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.relocate.verify"
+          }
+        ]
+      },
+      "description": "Verify an exact prepared local move and repaired Git metadata.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_fingerprint": {
+            "type": "string"
+          },
+          "relocation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relocation_id",
+          "expected_fingerprint"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_fingerprint": {
+                "type": "string"
+              },
+              "relocation_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "relocation_id",
+              "expected_fingerprint"
+            ],
+            "title": "Reference",
+            "type": "object"
+          },
+          "name": "project_checkout_relocate_verify",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.relocate.verify",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "checkout_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "committed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "new_path": {
+            "type": "string"
+          },
+          "old_path": {
+            "type": "string"
+          },
+          "prepared_at": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "relocation_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relocation_id",
+          "project_id",
+          "repository_id",
+          "worktree_id",
+          "old_path",
+          "new_path",
+          "fingerprint",
+          "state",
+          "checkout_revision",
+          "prepared_at"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.relocate.commit"
+          }
+        ]
+      },
+      "description": "Commit verified current paths while retaining permanent identities and path aliases.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_fingerprint": {
+            "type": "string"
+          },
+          "relocation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relocation_id",
+          "expected_fingerprint"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_fingerprint": {
+                "type": "string"
+              },
+              "relocation_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "relocation_id",
+              "expected_fingerprint"
+            ],
+            "title": "Reference",
+            "type": "object"
+          },
+          "name": "project_checkout_relocate_commit",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.relocate.commit",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "checkout_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "committed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "new_path": {
+            "type": "string"
+          },
+          "old_path": {
+            "type": "string"
+          },
+          "prepared_at": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "relocation_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relocation_id",
+          "project_id",
+          "repository_id",
+          "worktree_id",
+          "old_path",
+          "new_path",
+          "fingerprint",
+          "state",
+          "checkout_revision",
+          "prepared_at"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call project.checkout.relocate.cancel"
+          }
+        ]
+      },
+      "description": "Cancel a prepared trusted local relocation after verifying the original source.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_fingerprint": {
+            "type": "string"
+          },
+          "relocation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relocation_id",
+          "expected_fingerprint"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_fingerprint": {
+                "type": "string"
+              },
+              "relocation_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "relocation_id",
+              "expected_fingerprint"
+            ],
+            "title": "Reference",
+            "type": "object"
+          },
+          "name": "project_checkout_relocate_cancel",
+          "transform": "identity"
+        }
+      ],
+      "name": "project.checkout.relocate.cancel",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "checkout_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "committed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "new_path": {
+            "type": "string"
+          },
+          "old_path": {
+            "type": "string"
+          },
+          "prepared_at": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "relocation_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relocation_id",
+          "project_id",
+          "repository_id",
+          "worktree_id",
+          "old_path",
+          "new_path",
+          "fingerprint",
+          "state",
+          "checkout_revision",
+          "prepared_at"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
       },
       "transport": {
         "longRunning": false,

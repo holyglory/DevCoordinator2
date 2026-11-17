@@ -97,6 +97,7 @@ impl ProjectService {
             if p.cursor.physical < p.physical.len() {
                 let id = &p.physical[p.cursor.physical];
                 let physical = self.physical(&p.project, id)?;
+                self.verify_physical(&physical)?;
                 match p.cursor.stage.as_str() {
                     "status" => {
                         if let Some(last) =
@@ -185,6 +186,25 @@ impl ProjectService {
     fn physical(&self, project: &str, id: &str) -> Result<Physical, ProtocolError> {
         self.database.read(|c|{ensure_not_relocating(c,&[id.to_owned()])?;c.query_row("SELECT r.repository_id,m.repository_id,r.root_path,r.registered_by_uid FROM project_repository_memberships m JOIN repositories r ON r.repository_id=m.physical_repository_id WHERE m.project_id=$1 AND m.physical_repository_id=$2",params![project,id],|r|Ok(Physical{id:r.get(0)?,source:r.get(1)?,path:PathBuf::from(r.get::<_,String>(2)?),uid:r.get(3)?})).optional()?.ok_or_else(not_found_db)}).map_err(database_error)
     }
+    fn verify_physical(&self, physical: &Physical) -> Result<(), ProtocolError> {
+        if physical.uid == 0 {
+            return Err(denied("a registered non-root source owner is required"));
+        }
+        let gid = crate::systemd::primary_gid(physical.uid)
+            .map_err(|_| denied("registered source owner is unavailable"))?;
+        // Registration verifies/binds the native identity, preserving existing
+        // IDs. It also adopts a real primary checkout when only a linked one
+        // had previously been registered. A reused path cannot bypass it.
+        let current =
+            Registry::new(self.database.clone()).register(&physical.path, physical.uid, gid)?;
+        if current.repository_id != physical.id {
+            return Err(ProtocolError::new(
+                ErrorCode::ConfigurationConflict,
+                "the registered physical source identity changed",
+            ));
+        }
+        Ok(())
+    }
     fn refresh_inventory(
         &self,
         p: &Pending,
@@ -272,6 +292,24 @@ impl ProjectService {
                 path: path.clone(),
                 ..physical.clone()
             };
+            let common = git(
+                &current,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                budget,
+            )?;
+            let common = std::str::from_utf8(&common)
+                .map_err(|_| invalid("checkout Git identity is invalid"))?;
+            let common = Path::new(common.strip_suffix('\n').unwrap_or(common));
+            let observed_identity = crate::storage::fs::identity(common)
+                .map_err(|_| invalid("checkout Git identity is unavailable"))?;
+            let expected_identity = crate::storage::fs::identity(&physical.path.join(".git"))
+                .map_err(|_| invalid("registered Git identity is unavailable"))?;
+            if observed_identity != expected_identity {
+                return Err(ProtocolError::new(
+                    ErrorCode::ConfigurationConflict,
+                    "checkout belongs to a different physical Git source",
+                ));
+            }
             row.dirty = Some(
                 !git(
                     &current,
@@ -315,7 +353,7 @@ impl ProjectService {
         row.revision += 1;
         let now = timestamp();
         let roots = self.root_inputs(&p.project)?;
-        self.attach_storage(&p.project, physical, &mut row, &roots, &now)?;
+        self.attach_storage(&p.project, &p.id, physical, &mut row, &roots, &now, budget)?;
         let wid = row.worktree_id.clone();
         self.database
             .transaction(|c| {
@@ -353,6 +391,7 @@ impl ProjectService {
                 }
             }
             let (mut commits, more, next_remote) = if let Some(physical) = local {
+                self.verify_physical(&physical)?;
                 let output = git(
                     &physical,
                     &[
@@ -573,13 +612,15 @@ impl ProjectService {
     fn attach_storage(
         &self,
         project: &str,
+        job_id: &str,
         physical: &Physical,
         row: &mut api::Checkout,
         roots: &[api::RootInput],
         now: &str,
+        budget: &Budget,
     ) -> Result<(), ProtocolError> {
         use crate::storage::model::{Locator, Record};
-        use devcoordinator2_api::storage::{Effect, Kind};
+        use devcoordinator2_api::storage::Kind;
         let records=self.database.read(|c|{c.prepare("SELECT record_json::text FROM storage_artifacts WHERE repository_id=$1 AND removed_at_ms IS NULL ORDER BY artifact_id LIMIT 4097")?.query_map([&physical.id],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>().map_err(DatabaseError::from)}).map_err(database_error)?;
         if records.len() > 4096 {
             return Err(invalid(
@@ -646,50 +687,102 @@ impl ProjectService {
             row.artifact_ids.push(record.artifact.artifact_id.clone());
             add_optional(&mut build, record.artifact.allocated_bytes);
         }
-        let total = root_measurement
-            .as_ref()
-            .and_then(|r| r.artifact.allocated_bytes);
-        row.build_bytes = build;
-        // A root containing the shared Git directory is not attributed to a
-        // branch without a separately measured Git allocation.
-        let includes_git = checkout.join(".git").is_dir();
-        row.source_bytes = if includes_git {
-            None
+        let observed = if row.exists == Some(true) {
+            bounded_measure(checkout, budget)
         } else {
-            total.and_then(|t| {
-                if selected.is_empty() {
-                    Some(t)
-                } else {
-                    build.and_then(|b| t.checked_sub(b))
-                }
-            })
+            None
         };
-        row.local_bytes = if includes_git { None } else { total };
+        let total = match observed.as_ref() {
+            Some(m) if !m.multiply_linked => Some(m.bytes),
+            Some(_) => None,
+            None => root_measurement
+                .as_ref()
+                .and_then(|r| r.artifact.allocated_bytes),
+        };
+        let source_measured_at = if observed.is_some() {
+            Some(now.to_owned())
+        } else {
+            root_measurement
+                .as_ref()
+                .and_then(|r| measurement_time(r.artifact.verified_at_ms))
+        };
+        let common = physical.path.join(".git");
+        let common_identity = crate::storage::fs::identity(&common).ok();
+        let shared_key = common_identity
+            .map(|(dev, ino)| format!("shared-git-{dev:x}-{ino:x}"))
+            .unwrap_or_else(|| format!("shared-git-{}", physical.id));
+        let cached_shared=self.database.read(|c|c.query_row("SELECT s.allocated_bytes,s.measured_at FROM project_storage s JOIN project_jobs j ON j.job_id=$4 WHERE s.project_id=$1 AND s.physical_repository_id=$2 AND s.kind='shared' AND s.accounting_id=$3 AND s.measured_at>=j.started_at ORDER BY s.measured_at DESC LIMIT 1",params![project,physical.id,shared_key,job_id],|r|Ok((r.get::<_,Option<u64>>(0)?,r.get::<_,Option<String>>(1)?))).optional().map_err(DatabaseError::from)).map_err(database_error)?;
+        let (shared_bytes, shared_measured_at) = if let Some(cached) = cached_shared {
+            cached
+        } else {
+            let measured = bounded_measure(&common, budget);
+            (
+                measured
+                    .as_ref()
+                    .and_then(|m| (!m.multiply_linked).then_some(m.bytes)),
+                measured.map(|_| now.to_owned()),
+            )
+        };
+        row.build_bytes = build;
+        // The common Git allocation is a repository bucket, never a branch
+        // allocation. Existing build records are subtracted exactly once.
+        let includes_git = checkout == physical.path;
+        let local = if includes_git {
+            total.and_then(|t| shared_bytes.and_then(|g| t.checked_sub(g)))
+        } else {
+            total
+        };
+        row.source_bytes = local.and_then(|t| {
+            if selected.is_empty() {
+                Some(t)
+            } else {
+                build.and_then(|b| t.checked_sub(b))
+            }
+        });
+        row.local_bytes = local;
         if let Some(root) = &root_measurement {
             row.artifact_ids.push(root.artifact.artifact_id.clone());
         }
-        let source_accounting = root_measurement
+        let source_accounting = observed
             .as_ref()
-            .map(|r| {
-                if r.artifact.accounting_id.is_empty() {
-                    format!("source-{}", r.resource_key)
-                } else {
-                    format!("source-{}", r.artifact.accounting_id)
-                }
+            .map(|m| format!("source-fs-{:x}-{:x}", m.device, m.inode))
+            .or_else(|| {
+                root_measurement.as_ref().map(|r| {
+                    if r.artifact.accounting_id.is_empty() {
+                        format!("source-{}", r.resource_key)
+                    } else {
+                        format!("source-{}", r.artifact.accounting_id)
+                    }
+                })
             })
             .unwrap_or_else(|| format!("unmeasured-{}", row.worktree_id));
         self.database.transaction(|c|{
             c.execute("DELETE FROM project_storage WHERE project_id=$1 AND worktree_id=$2",params![project,row.worktree_id])?;
-            c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,$5,$6,'source',$7,$8) ON CONFLICT(project_id,accounting_id) DO NOTHING",params![project,physical.source,physical.id,source_accounting,root_measurement.as_ref().map(|r|r.artifact.artifact_id.as_str()).unwrap_or(""),row.worktree_id,row.source_bytes,now])?;
-            for (_,record) in &selected {let key=if record.artifact.accounting_id.is_empty(){record.resource_key.clone()}else{record.artifact.accounting_id.clone()};c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,$5,$6,'build',$7,$8) ON CONFLICT(project_id,accounting_id) DO NOTHING",params![project,physical.source,physical.id,key,record.artifact.artifact_id,row.worktree_id,record.artifact.allocated_bytes,now])?;}
-            // Keep the shared allocation explicitly unknown rather than invent
-            // zero space or count the primary checkout's Git data per branch.
-            if includes_git {c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,'','shared',NULL,$5) ON CONFLICT(project_id,accounting_id) DO UPDATE SET measured_at=excluded.measured_at",params![project,physical.source,physical.id,format!("shared-git-{}",physical.id),now])?;}
+            c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,$5,$6,'source',$7,$8) ON CONFLICT(project_id,accounting_id) DO NOTHING",params![project,physical.source,physical.id,source_accounting,root_measurement.as_ref().map(|r|r.artifact.artifact_id.as_str()).unwrap_or(""),row.worktree_id,row.source_bytes,source_measured_at])?;
+            for (_,record) in &selected {let key=if record.artifact.accounting_id.is_empty(){record.resource_key.clone()}else{record.artifact.accounting_id.clone()};c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,worktree_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,$5,$6,'build',$7,$8) ON CONFLICT(project_id,accounting_id) DO NOTHING",params![project,physical.source,physical.id,key,record.artifact.artifact_id,row.worktree_id,record.artifact.allocated_bytes,measurement_time(record.artifact.verified_at_ms)])?;}
+            c.execute("DELETE FROM project_storage WHERE project_id=$1 AND physical_repository_id=$2 AND kind='shared' AND accounting_id<>$3",params![project,physical.id,shared_key])?;
+            c.execute("INSERT INTO project_storage(project_id,repository_id,physical_repository_id,accounting_id,artifact_id,kind,allocated_bytes,measured_at) VALUES($1,$2,$3,$4,'','shared',$5,$6) ON CONFLICT(project_id,accounting_id) DO UPDATE SET allocated_bytes=excluded.allocated_bytes,measured_at=excluded.measured_at",params![project,physical.source,physical.id,shared_key,shared_bytes,shared_measured_at])?;
             Ok(())
         }).map_err(database_error)?;
-        let _ = Effect::SourceWorktree;
         Ok(())
     }
+}
+fn bounded_measure(path: &Path, budget: &Budget) -> Option<crate::storage::fs::Measurement> {
+    let remaining = budget.remaining().min(Duration::from_millis(250));
+    if remaining < Duration::from_millis(5) {
+        return None;
+    }
+    crate::storage::fs::MeasurementCursor::new(path)
+        .ok()?
+        .step(100_000, remaining)
+        .ok()
+        .flatten()
+}
+fn measurement_time(ms: Option<u64>) -> Option<String> {
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms?) * 1_000_000)
+        .ok()?
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()
 }
 
 fn git(physical: &Physical, args: &[&str], budget: &Budget) -> Result<Vec<u8>, ProtocolError> {

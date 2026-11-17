@@ -1000,6 +1000,16 @@
       },
       "responseTimeoutSeconds": 10
     },
+    "project.branch.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
     "project.branch.list": {
       "passiveWait": false,
       "policy": {
@@ -1030,12 +1040,62 @@
       },
       "responseTimeoutSeconds": 10
     },
+    "project.checkout.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
     "project.checkout.list": {
       "passiveWait": false,
       "policy": {
         "effect": "read",
         "idempotent": true,
         "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "project.checkout.relocate.cancel": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "project.checkout.relocate.commit": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "project.checkout.relocate.prepare": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "project.checkout.relocate.verify": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
         "scope": "server"
       },
       "responseTimeoutSeconds": 10

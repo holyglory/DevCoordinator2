@@ -41,6 +41,7 @@ window.DevCoordinatorProjectExplorer = (() => {
     const selectedCopy = () => s.data?.checkouts.find(c => c.worktree_id === s.checkoutId);
     const repository = id => s.data?.repositories.find(r => r.repository_id === id);
     const permissions = id => repository(id)?.permissions || s.data?.permissions || {};
+    const itemPermissions = item => item.worktree_id && item.permissions ? item.permissions : permissions(item.repository_id);
     const route = () => history.replaceState(history.state, '', href(s.projectId, s.view, s.branchId, s.checkoutId));
     const fault = error => { if (!alive() || error?.code === 'stale' || error?.name === 'AbortError') return; s.error = error?.message || t('requestFailed'); paintState(); };
     const key = purpose => `explorer-${purpose}-${crypto.randomUUID()}`;
@@ -189,7 +190,7 @@ window.DevCoordinatorProjectExplorer = (() => {
       const item = selectedCopy() || selectedBranch();
       panel.hidden = !item || !['copies', 'branches'].includes(s.view);
       if (panel.hidden) return;
-      const isCopy = Boolean(item.worktree_id), rights = permissions(item.repository_id);
+      const isCopy = Boolean(item.worktree_id), rights = itemPermissions(item);
       const title = isCopy ? item.relative_path : item.branch_name;
       const taskLink = item.task_id ? `#/plan/${encodeURIComponent(item.repository_id)}?task=${encodeURIComponent(item.task_id)}` : null;
       const pr = !isCopy && item.pr?.url ? external(item.pr.url) : null;
@@ -332,7 +333,7 @@ window.DevCoordinatorProjectExplorer = (() => {
       if (s.view === 'history') paintBody();
     }
     async function editDetails() {
-      let item = selectedCopy() || selectedBranch(); if (!item || !permissions(item.repository_id).edit) return;
+      let item = selectedCopy() || selectedBranch(); if (!item || !itemPermissions(item).edit) return;
       const isCopy = Boolean(item.worktree_id), selectedId = item[isCopy ? 'worktree_id' : 'branch_id'];
       if (item.details_omitted) item = await api(`project.${isCopy ? 'checkout' : 'branch'}.get`, { project_id: s.projectId, [isCopy ? 'worktree_id' : 'branch_id']: selectedId });
       if (!alive() || selectedId !== (isCopy ? s.checkoutId : s.branchId)) return;

@@ -301,7 +301,7 @@ pub struct Repository {
     #[serde(default)]
     pub details_omitted: bool,
 }
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Permissions {
     pub edit: bool,
@@ -347,6 +347,8 @@ pub struct Checkout {
     pub protection_reasons: Vec<String>,
     pub can_remove: bool,
     pub locations: Vec<Location>,
+    #[serde(default)]
+    pub permissions: Permissions,
     #[serde(default)]
     pub details_omitted: bool,
 }

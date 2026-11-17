@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-const TOKEN: &str = "fixture";
+const TOKEN: &str = "fixture-auth-access";
 const FEATURE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PARENT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const MERGE: &str = "cccccccccccccccccccccccccccccccccccccccc";
@@ -623,7 +623,7 @@ async fn http_deadline_does_not_turn_a_slow_remote_into_missing_data() {
 
 #[tokio::test]
 async fn http_next_operation_reads_a_rotated_private_credential() {
-    const ROTATED: &str = "replacement";
+    const ROTATED: &str = "fixture-auth-rotated";
     let mut second = Step::get(root(), repo_json());
     second.expected_token = ROTATED;
     let fixture = Fixture::start(vec![Step::get(root(), repo_json()), second]).await;

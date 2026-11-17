@@ -7,10 +7,31 @@ use crate::automation_test_support::{Fixture, FixtureClock};
 use crate::{capacity::CapacityBroker, events::EventService, platform::Clock};
 use devcoordinator2_api::{ClientKind, storage as storage_api};
 use std::{
+    cell::RefCell,
     fs,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
+
+const FIXTURE_EDGE_UID: u32 = 31_415;
+
+thread_local! {
+    static FIXTURE_OWNERS:RefCell<Vec<PathBuf>>=const{RefCell::new(Vec::new())};
+}
+
+struct FixtureOwnership(PathBuf);
+impl FixtureOwnership {
+    fn record(temporary: &tempfile::TempDir) -> Self {
+        let path = temporary.path().to_path_buf();
+        FIXTURE_OWNERS.with(|owners| owners.borrow_mut().push(path.clone()));
+        Self(path)
+    }
+}
+impl Drop for FixtureOwnership {
+    fn drop(&mut self) {
+        FIXTURE_OWNERS.with(|owners| owners.borrow_mut().retain(|path| path != &self.0));
+    }
+}
 
 struct MutableClock(Arc<AtomicU64>);
 impl Clock for MutableClock {
@@ -89,9 +110,28 @@ struct CheckoutFixture {
     service: ProjectService,
     checkout: PathBuf,
     now: Arc<AtomicU64>,
+    _ownership: FixtureOwnership,
 }
 
 fn git(path: &Path, args: &[&str]) -> String {
+    let owner = if unsafe { libc::geteuid() } == 0 {
+        let owners = FIXTURE_OWNERS.with(|owners| {
+            owners
+                .borrow()
+                .iter()
+                .filter(|owner| path.starts_with(owner))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            owners.len(),
+            1,
+            "Git must have exactly one explicitly recorded TempDir owner"
+        );
+        Some(owners[0].clone())
+    } else {
+        None
+    };
     let output = Command::new("/usr/bin/git")
         .arg("-C")
         .arg(path)
@@ -114,16 +154,8 @@ fn git(path: &Path, args: &[&str]) -> String {
         args,
         String::from_utf8_lossy(&output.stderr)
     );
-    if unsafe { libc::geteuid() } == 0 {
-        let root = work_root();
-        let relative = path
-            .strip_prefix(&root)
-            .expect("Git fixture must remain under its marked work root");
-        let first = relative
-            .components()
-            .next()
-            .expect("Git cannot target the work root itself");
-        own_fixture_tree(&root.join(first.as_os_str()));
+    if let Some(owner) = owner {
+        own_fixture_tree(&owner);
     }
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
@@ -152,6 +184,7 @@ fn caller() -> Caller {
 
 fn administrator() -> Caller {
     Caller {
+        uid: FIXTURE_EDGE_UID,
         via_edge: true,
         client_kind: ClientKind::Edge,
         identity: Some("owner@example.invalid".into()),
@@ -162,7 +195,8 @@ fn administrator() -> Caller {
 impl CheckoutFixture {
     fn new() -> Self {
         let confined = work_root();
-        let fixture = Fixture::new();
+        let mut fixture = Fixture::new();
+        fixture.config.edge_uid = Some(FIXTURE_EDGE_UID);
         assert!(fixture._temporary.path().starts_with(&confined));
         assert!(
             fixture
@@ -176,6 +210,7 @@ impl CheckoutFixture {
             0,
             "Git execution identity must remain non-root"
         );
+        let ownership = FixtureOwnership::record(&fixture._temporary);
         let root = &fixture.repository;
         git(root, &["init", "-q", "-b", "main"]);
         fs::write(root.join("source.txt"), "preserved source\n").unwrap();
@@ -247,6 +282,7 @@ impl CheckoutFixture {
             service,
             checkout,
             now,
+            _ownership: ownership,
         }
     }
 
@@ -294,7 +330,9 @@ impl CheckoutFixture {
             .service
             .checkout_remove_start(start, &caller())
             .unwrap();
-        self.storage.execute_job(&job.job.job_id).unwrap();
+        self.storage
+            .execute_queued_job_for_fixture(&job.job.job_id)
+            .unwrap();
         self.service
             .checkout_remove_job(
                 removal::JobReference {
@@ -419,6 +457,24 @@ fn exact_console_approval_allows_known_loss_but_stale_content_requires_a_new_pla
             .message,
         "recorded_human_consent_required"
     );
+    let spoofed = Caller {
+        uid: caller().uid,
+        ..administrator()
+    };
+    let error = fixture
+        .service
+        .checkout_remove_approve(
+            removal::Approve {
+                project_id: "product".into(),
+                plan_id: plan.plan_id.clone(),
+                fingerprint: plan.fingerprint.clone(),
+                idempotency_key: "untrusted-edge-claim".into(),
+                consent_decision_id: None,
+            },
+            &spoofed,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
     let approval = fixture.approve(&plan);
     assert_eq!(fixture.approve(&plan).receipt_id, approval.receipt_id);
     fs::write(fixture.checkout.join("untracked.txt"), "other draft\n").unwrap();
@@ -552,7 +608,11 @@ fn protected_credentials_nested_sources_and_primary_copies_remain_blocked() {
             },
             &administrator(),
         );
-        assert!(approval.is_err(), "{scope}");
+        assert_eq!(
+            approval.unwrap_err().message,
+            "plan_has_blockers",
+            "{scope}"
+        );
         assert!(fixture.checkout.exists());
         let encoded = serde_json::to_string(&plan).unwrap();
         assert!(!encoded.contains("fixture-secret-never-returned"));
@@ -577,7 +637,10 @@ fn cancelled_cleanup_and_recreated_directory_never_issue_verified_removal() {
             &caller(),
         )
         .unwrap();
-    fixture.storage.execute_job(&queued.job.job_id).unwrap();
+    fixture
+        .storage
+        .execute_queued_job_for_fixture(&queued.job.job_id)
+        .unwrap();
     let result = fixture
         .service
         .checkout_remove_job(
@@ -730,7 +793,10 @@ fn partial_cleanup_and_late_leases_do_not_complete_unremoved_targets() {
         "work created after cleanup was queued",
     )
     .unwrap();
-    fixture.storage.execute_job(&queued.job.job_id).unwrap();
+    fixture
+        .storage
+        .execute_queued_job_for_fixture(&queued.job.job_id)
+        .unwrap();
     let result = fixture
         .service
         .checkout_remove_job(
@@ -794,7 +860,10 @@ fn partial_cleanup_and_late_leases_do_not_complete_unremoved_targets() {
             &caller(),
         )
         .unwrap();
-    leased.storage.execute_job(&queued.job.job_id).unwrap();
+    leased
+        .storage
+        .execute_queued_job_for_fixture(&queued.job.job_id)
+        .unwrap();
     let result = leased
         .service
         .checkout_remove_job(
@@ -922,7 +991,10 @@ fn expired_approval_recovers_only_the_already_removed_checkout_metadata() {
         .contains(fixture.checkout.to_str().unwrap())
     );
     fixture.now.store(plan.expires_at_ms + 1, Ordering::SeqCst);
-    fixture.storage.execute_job(&queued.job.job_id).unwrap();
+    fixture
+        .storage
+        .execute_queued_job_for_fixture(&queued.job.job_id)
+        .unwrap();
     let result = fixture
         .service
         .checkout_remove_job(

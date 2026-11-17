@@ -505,6 +505,13 @@ fn viewer_operator_admin_and_clone_isolation_apply_to_every_cached_projection() 
     );
     assert!(status.checkouts.iter().all(|c| c.absolute_path.is_none()));
     assert!(!status.permissions.edit);
+    assert!(!status.checkouts[0].permissions.edit);
+    let operator_status = service
+        .status(reference(&product.project.project_id), &operator)
+        .unwrap();
+    assert!(!operator_status.repositories[0].permissions.edit);
+    assert!(operator_status.checkouts[0].permissions.edit);
+    assert!(operator_status.checkouts[0].permissions.cleanup);
     let serialized = serde_json::to_string(&status).unwrap();
     assert!(!serialized.contains(fixture._temporary.path().to_str().unwrap()));
     assert!(!serialized.contains("private-checkout"));
@@ -535,6 +542,7 @@ fn viewer_operator_admin_and_clone_isolation_apply_to_every_cached_projection() 
         .update_checkout(patch(checkout.revision), &operator)
         .unwrap();
     assert_eq!(edited.intent.as_deref(), Some("Resume source"));
+    assert!(edited.permissions.edit);
     assert!(edited.absolute_path.is_none());
     // A source-wide branch edit requires operator authority for all physical
     // members; one visible clone cannot modify another clone's shared intent.
@@ -819,4 +827,217 @@ fn large_project_metadata_retains_bounded_pages_and_full_point_details() {
     let checkouts = service.checkouts(page(&project, 100), &caller()).unwrap();
     assert!(encoded_len(&checkouts) < 192 * 1024);
     assert!(!checkouts.checkouts.is_empty());
+}
+
+#[test]
+fn refresh_rejects_a_foreign_repository_reusing_a_registered_path() {
+    let fixture = Fixture::new();
+    initialize(&fixture.repository);
+    git(&fixture.repository, &["branch", "original-feature"]);
+    let linked = fixture._temporary.path().join("identity-linked");
+    git(
+        &fixture.repository,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "linked-feature",
+            linked.to_str().unwrap(),
+        ],
+    );
+    fixture
+        .database
+        .transaction(|c| {
+            c.execute(
+                "UPDATE repositories SET registered_by_uid=$1",
+                [caller().uid],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let service = ProjectService::new(
+        fixture.database.clone(),
+        Registry::new(fixture.database.clone()),
+    );
+    let status = configure(
+        &service,
+        &fixture,
+        "Identity",
+        vec![source("project-alpha", &["project-alpha"])],
+    );
+    let project = status.project.project_id;
+    drain(&service, &project, "bind-native");
+    let old = service.status(reference(&project), &caller()).unwrap();
+    let linked_old = fixture._temporary.path().join("kept-linked");
+    fs::rename(&linked, &linked_old).unwrap();
+    initialize(&linked);
+    git(&linked, &["branch", "foreign-linked"]);
+    let linked_job = service
+        .refresh(
+            api::Refresh {
+                project_id: project.clone(),
+                idempotency_key: "reject-linked-replacement".into(),
+                include_remote: false,
+            },
+            &caller(),
+        )
+        .unwrap();
+    for _ in 0..10 {
+        service.refresh_step(&mut Budget::new(Duration::from_secs(10), 256, 1024 * 1024));
+    }
+    assert_eq!(
+        service
+            .job(
+                api::JobReference {
+                    project_id: project.clone(),
+                    job_id: linked_job.job_id
+                },
+                &caller()
+            )
+            .unwrap()
+            .state,
+        "partial"
+    );
+    assert!(
+        service
+            .status(reference(&project), &caller())
+            .unwrap()
+            .branches
+            .iter()
+            .all(|b| b.branch_name != "foreign-linked")
+    );
+    let kept = fixture._temporary.path().join("kept-original");
+    fs::rename(&fixture.repository, &kept).unwrap();
+    initialize(&fixture.repository);
+    git(&fixture.repository, &["branch", "private-foreign"]);
+    let job = service
+        .refresh(
+            api::Refresh {
+                project_id: project.clone(),
+                idempotency_key: "reject-replacement".into(),
+                include_remote: false,
+            },
+            &caller(),
+        )
+        .unwrap();
+    for _ in 0..5 {
+        service.refresh_step(&mut Budget::new(Duration::from_secs(10), 256, 1024 * 1024));
+    }
+    let job = service
+        .job(
+            api::JobReference {
+                project_id: project.clone(),
+                job_id: job.job_id,
+            },
+            &caller(),
+        )
+        .unwrap();
+    assert_eq!(job.state, "partial");
+    let status = service.status(reference(&project), &caller()).unwrap();
+    assert_eq!(status.repositories[0].refresh_state, "failed");
+    assert!(
+        status
+            .branches
+            .iter()
+            .all(|b| b.branch_name != "private-foreign")
+    );
+    assert!(
+        status
+            .branches
+            .iter()
+            .any(|b| b.branch_name == "original-feature")
+    );
+    assert_eq!(
+        status
+            .branches
+            .iter()
+            .map(|b| &b.branch_id)
+            .collect::<BTreeSet<_>>(),
+        old.branches
+            .iter()
+            .map(|b| &b.branch_id)
+            .collect::<BTreeSet<_>>()
+    );
+    assert!(kept.join("source.txt").is_file());
+}
+
+#[test]
+fn measured_source_allocations_exclude_shared_git_and_declared_unmeasured_builds() {
+    let fixture = Fixture::new();
+    initialize(&fixture.repository);
+    fixture
+        .database
+        .transaction(|c| {
+            c.execute(
+                "UPDATE repositories SET registered_by_uid=$1",
+                [caller().uid],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let linked = fixture._temporary.path().join("measured-feature");
+    git(
+        &fixture.repository,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            linked.to_str().unwrap(),
+        ],
+    );
+    fs::write(linked.join("local.bin"), vec![1u8; 16 * 1024]).unwrap();
+    let service = ProjectService::new(
+        fixture.database.clone(),
+        Registry::new(fixture.database.clone()),
+    );
+    let status = configure(
+        &service,
+        &fixture,
+        "Measured",
+        vec![source("project-alpha", &["project-alpha"])],
+    );
+    let project = status.project.project_id;
+    drain(&service, &project, "measure-real");
+    let status = service.status(reference(&project), &caller()).unwrap();
+    let shared = crate::storage::fs::measure(&fixture.repository.join(".git"))
+        .unwrap()
+        .bytes;
+    let whole = crate::storage::fs::measure(&fixture.repository)
+        .unwrap()
+        .bytes
+        + crate::storage::fs::measure(&linked).unwrap().bytes;
+    assert_eq!(status.storage.shared_bytes, Some(shared));
+    assert_eq!(status.storage.allocated_bytes, Some(whole));
+    assert_eq!(status.storage.source_bytes, Some(whole - shared));
+    assert_eq!(status.storage.unmeasured_count, 0);
+    assert!(status.storage.measured_at.is_some());
+    assert_eq!(
+        status
+            .checkouts
+            .iter()
+            .map(|c| c.local_bytes.unwrap())
+            .sum::<u64>(),
+        whole - shared
+    );
+    let buckets = fixture
+        .database
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM project_storage WHERE project_id=$1 AND kind='shared'",
+                [&project],
+                |r| r.get::<_, u32>(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(buckets, 1);
+    let build = fixture._temporary.path().join("declared-build");
+    fs::create_dir(&build).unwrap();
+    fixture.database.transaction(|c|{c.execute("INSERT INTO project_roots(project_id,root_id,kind,label,absolute_path) VALUES($1,'build-root','build','Build',$2)",params![project,build.to_string_lossy().into_owned()])?;Ok(())}).unwrap();
+    let status = service.status(reference(&project), &caller()).unwrap();
+    assert_eq!(status.storage.allocated_bytes, None);
+    assert_eq!(status.storage.build_bytes, None);
+    assert!(status.storage.unmeasured_count > 0);
 }

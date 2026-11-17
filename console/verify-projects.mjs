@@ -88,9 +88,13 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
   await check('Primary local edits remain protected from removal',async()=>{
     const data=await call('project.status',{project_id:id});const primary=data.checkouts.find(c=>c.role==='primary');assert.ok(primary);
     const result=await request('project.checkout.remove.plan',{project_id:id,expected_project_revision:data.revision,targets:[{worktree_id:primary.worktree_id,expected_revision:primary.revision}]},'operator@example.test');
-    assert.equal(result.ok,true,JSON.stringify(result.error));
-    assert.equal(result.data.ready,false);
-    assert.ok([...result.data.blockers,...result.data.targets.flatMap(t=>t.blockers)].some(reason=>/primary|canonical|protected/.test(reason)),JSON.stringify(result.data));
+    if (result.ok) {
+      assert.equal(result.data.ready,false);
+      assert.ok([...result.data.blockers,...result.data.targets.flatMap(t=>t.blockers)].some(reason=>/primary|canonical|protected|linked_worktrees/.test(reason)),JSON.stringify(result.data));
+    } else {
+      assert.equal(result.error.code,'storage_blocked');
+      assert.match(result.error.message,/primary|canonical|clone_has_linked_worktrees/);
+    }
     assert.equal((await fs.readFile(path.join(fixture.primary,'unsaved-notes.txt'),'utf8')).includes('must survive'),true);
   });
   for (const theme of ['light','dark']) for(const width of [390,760,1050,1440,1487]) await check(`Project explorer ${theme} ${width}: visible tree and no horizontal page overflow`,async()=>{

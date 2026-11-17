@@ -382,7 +382,7 @@ impl ProjectService {
             if let Some(role)=&p.role{if protected.as_ref().is_some_and(|v|v!=role)||matches!(role.as_str(),"primary"|"deployment"){return Err(invalid("primary and deployment roles are assigned from protected ownership and cannot be changed").into());}row.role=role.clone();}
             apply_patch(&mut row.intent,&p.intent);apply_patch(&mut row.outcome,&p.outcome);apply_patch(&mut row.owner,&p.owner);apply_patch(&mut row.next_action,&p.next_action);apply_patch(&mut row.task_id,&p.task_id);if let Some(lifecycle)=&p.lifecycle{row.lifecycle=lifecycle.clone();}row.revision=revision+1;validate_task(c,&p.project_id,row.task_id.as_deref())?;
             c.execute("UPDATE project_checkouts SET revision=$3,intent=$4,outcome=$5,owner=$6,next_action=$7,task_id=$8,lifecycle=$9,role=$10,record_json=$11::jsonb,updated_at=$12,updated_by=$13 WHERE project_id=$1 AND worktree_id=$2",params![p.project_id,p.worktree_id,row.revision,row.intent,row.outcome,row.owner,row.next_action,row.task_id,row.lifecycle,row.role,json(&row)?,now,actor])?;
-            changed(c,&p.project_id,&actor,&now)?;event(c,&p.project_id,Some(&row.repository_id),Some(&physical),Some(&p.worktree_id),"checkout.updated","Checkout intent and lifecycle were updated",&actor,&now)?;redact_checkout(&mut row,&scope);Ok(row)
+            changed(c,&p.project_id,&actor,&now)?;event(c,&p.project_id,Some(&row.repository_id),Some(&physical),Some(&p.worktree_id),"checkout.updated","Checkout intent and lifecycle were updated",&actor,&now)?;redact_checkout(&mut row,&scope,&physical);Ok(row)
         }).map_err(database_error)?;
         self.publish_change(&p.project_id, "project.updated");
         Ok(result)
@@ -587,12 +587,24 @@ fn storage_summary(c: &Connection, id: &str, scope: &Scope) -> Result<api::Stora
     let visible = scope.visible_json();
     let (total,source,build,shared,unmeasured,measured):(Option<u64>,Option<u64>,Option<u64>,Option<u64>,u32,Option<String>)=c.query_row("SELECT sum(allocated_bytes)::bigint,sum(allocated_bytes) FILTER(WHERE kind='source')::bigint,sum(allocated_bytes) FILTER(WHERE kind='build')::bigint,sum(allocated_bytes) FILTER(WHERE kind='shared')::bigint,count(*) FILTER(WHERE allocated_bytes IS NULL),min(measured_at) FROM project_storage WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb)))",params![id,visible],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
     let missing:u32=c.query_row("SELECT count(*) FROM project_checkouts c WHERE c.project_id=$1 AND ($2::jsonb IS NULL OR c.physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) AND NOT EXISTS(SELECT 1 FROM project_storage s WHERE s.project_id=c.project_id AND s.worktree_id=c.worktree_id AND s.kind='source')",params![id,visible],|r|r.get(0))?;
-    let unknown = unmeasured.saturating_add(missing);
+    let (unknown_source,unknown_build,unknown_shared):(bool,bool,bool)=c.query_row("SELECT coalesce(bool_or(allocated_bytes IS NULL) FILTER(WHERE kind='source'),false),coalesce(bool_or(allocated_bytes IS NULL) FILTER(WHERE kind='build'),false),coalesce(bool_or(allocated_bytes IS NULL) FILTER(WHERE kind='shared'),false) FROM project_storage WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb)))",params![id,visible],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let missing_build:u32=c.query_row(&format!("SELECT count(*) FROM project_sources s WHERE s.project_id=$1 AND {SOURCE_VISIBLE} AND EXISTS(SELECT 1 FROM project_roots r WHERE r.project_id=s.project_id AND r.kind='build') AND NOT EXISTS(SELECT 1 FROM project_storage a WHERE a.project_id=s.project_id AND a.repository_id=s.repository_id AND a.kind='build' AND ($2::jsonb IS NULL OR a.physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))))"),params![id,visible],|r|r.get(0))?;
+    let unknown = unmeasured
+        .saturating_add(missing)
+        .saturating_add(missing_build);
     Ok(api::Storage {
         allocated_bytes: if unknown == 0 { total } else { None },
-        source_bytes: source,
-        build_bytes: build,
-        shared_bytes: shared,
+        source_bytes: if unknown_source || missing > 0 {
+            None
+        } else {
+            source
+        },
+        build_bytes: if unknown_build || missing_build > 0 {
+            None
+        } else {
+            build
+        },
+        shared_bytes: if unknown_shared { None } else { shared },
         unmeasured_count: unknown,
         measured_at: measured,
     })
@@ -668,12 +680,12 @@ fn checkout_page(
     target: Option<&str>,
 ) -> Result<api::CheckoutPage, DatabaseError> {
     let after = decode_cursor(p, "checkout").map_err(DatabaseError::Domain)?;
-    let rows=c.prepare("SELECT record_json::text FROM project_checkouts WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) AND worktree_id>$3 AND ($4::text IS NULL OR strpos(lower(coalesce(branch_name,'')),lower($4))>0 OR strpos(lower(coalesce(intent,'')),lower($4))>0 OR strpos(lower(record_json->>'relative_path'),lower($4))>0) AND ($5::text IS NULL OR lifecycle=$5) AND ($7::text IS NULL OR worktree_id=$7) ORDER BY worktree_id LIMIT $6")?.query_map(params![p.project_id,scope.visible_json(),after,p.query,p.lifecycle,i64::from(p.limit)+1,target],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
+    let rows=c.prepare("SELECT record_json::text,physical_repository_id FROM project_checkouts WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) AND worktree_id>$3 AND ($4::text IS NULL OR strpos(lower(coalesce(branch_name,'')),lower($4))>0 OR strpos(lower(coalesce(intent,'')),lower($4))>0 OR strpos(lower(record_json->>'relative_path'),lower($4))>0) AND ($5::text IS NULL OR lifecycle=$5) AND ($7::text IS NULL OR worktree_id=$7) ORDER BY worktree_id LIMIT $6")?.query_map(params![p.project_id,scope.visible_json(),after,p.query,p.lifecycle,i64::from(p.limit)+1,target],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<crate::database::Result<Vec<_>>>()?;
     let more = rows.len() > usize::from(p.limit);
     let mut checkouts = Vec::new();
-    for raw in rows.into_iter().take(usize::from(p.limit)) {
+    for (raw, physical) in rows.into_iter().take(usize::from(p.limit)) {
         let mut row = from_json(&raw)?;
-        redact_checkout(&mut row, scope);
+        redact_checkout(&mut row, scope, &physical);
         checkouts.push(row);
     }
     if target.is_none() {
@@ -693,7 +705,13 @@ fn checkout_page(
         next_cursor,
     })
 }
-fn redact_checkout(row: &mut api::Checkout, scope: &Scope) {
+fn redact_checkout(row: &mut api::Checkout, scope: &Scope, physical: &str) {
+    row.permissions = api::Permissions {
+        edit: scope.edits(physical),
+        cleanup: scope.edits(physical),
+        admin: scope.admin,
+    };
+    row.can_remove &= row.permissions.cleanup;
     if !scope.admin {
         row.absolute_path = None;
     }
@@ -783,6 +801,7 @@ fn empty_checkout(
         },
         can_remove: false,
         locations: Vec::new(),
+        permissions: api::Permissions::default(),
         details_omitted: false,
     }
 }

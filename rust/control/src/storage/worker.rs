@@ -920,6 +920,16 @@ impl StorageService {
         self.wake.notify_waiters();
     }
 
+    /// Drive the real queued-to-running admission before finite fixture work.
+    /// Test callers cannot bypass the production running-state intent guard.
+    #[cfg(test)]
+    pub(crate) fn execute_queued_job_for_fixture(&self, id: &str) -> Result<(), ProtocolError> {
+        if self.begin_job(id)?.is_some() {
+            self.execute_job(id)?;
+        }
+        Ok(())
+    }
+
     /// Finite execution boundary used by the native worker and acceptance fixtures.
     pub fn execute_job(&self, id: &str) -> Result<(), ProtocolError> {
         let job = self.job(id)?;
