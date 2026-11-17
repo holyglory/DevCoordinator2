@@ -3010,15 +3010,20 @@ fn native_container_image_metadata_keeps_create_inspect_and_cleanup_owned() {
     if created.is_err() {
         docker.image_labels.lock().unwrap().clear();
     }
-    docker.exit_unexpectedly(false, "expected successful finite output");
+    // Publish a coherent successful exit before the lifecycle observer sees it.
+    *docker.diagnostic_logs.lock().unwrap() = "expected successful finite output".into();
+    docker.oom_killed.store(false, Ordering::SeqCst);
     docker.container_exit_code.store(0, Ordering::SeqCst);
-    let cleaned = world.containers.retry(reference, &world.caller).unwrap();
+    docker.exited.store(true, Ordering::SeqCst);
     world.systemd.finish(&started.unit);
     world.wait_status(if created.is_ok() {
         TestStatus::Passed
     } else {
         TestStatus::Failed
     });
+    // The terminal summary follows owned cleanup and release of its operation
+    // lease. Exercise idempotent retry without racing that valid cleanup.
+    let cleaned = world.containers.retry(reference, &world.caller).unwrap();
     let created = created.expect("native container creation must accept unrelated image metadata");
     assert_eq!(
         created.inspection.as_ref().unwrap().labels,
