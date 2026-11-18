@@ -4,7 +4,7 @@ use crate::{Error, Persistence, Result};
 use sha2::{Digest, Sha256};
 
 pub const LEGACY_SCHEMA_VERSION: u32 = 34;
-pub const DATABASE_SCHEMA_VERSION: u32 = 39;
+pub const DATABASE_SCHEMA_VERSION: u32 = 40;
 pub const MIGRATIONS: &[(i64, &str, &str)] = &[
     (
         1,
@@ -110,6 +110,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         21,
         "legacy_generation_origin_worktrees",
         include_str!("../migrations/0021_legacy_generation_origin_worktrees.sql"),
+    ),
+    (
+        22,
+        "worktree_native_identity_tombstones",
+        include_str!("../migrations/0022_worktree_native_identity_tombstones.sql"),
     ),
 ];
 

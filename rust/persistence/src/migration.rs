@@ -869,7 +869,7 @@ pub fn import_sqlite(database: &Persistence, path: &Path) -> Result<ImportReceip
         for table in &target_tables{if !matches!(table.as_str(),
             "coordinator_maintenance"|"test_log_retention_projection"|"generation_source_origins"|"codex_usage_contexts"|"codex_usage_operation_contexts"|
             "projects"|"project_roots"|"project_sources"|"project_repository_memberships"|"project_branches"|"project_checkouts"|"project_events"|"project_jobs"|"project_commits"|"project_storage"|"project_branch_observations"|"project_remote_observations"|"project_commit_pages"|
-            "repository_native_identities"|"worktree_native_identities"|"repository_relocations"|"registry_path_aliases"|
+            "repository_native_identities"|"worktree_native_identities"|"worktree_native_identity_tombstones"|"repository_relocations"|"registry_path_aliases"|
             "project_checkout_aliases"|"project_checkout_artifacts"|"project_artifact_requests"|"relocation_consumers") && !source_names.contains(table.as_str()){return Err(Error::Migration(format!("source is missing required authority table {table}")));}}
         tx.execute_batch(&format!("TRUNCATE {} RESTART IDENTITY",target_tables.iter().map(|t|quoted(t)).chain(["dc2_delivery_protection_heads","dc2_storage_lease_artifacts","dc2_review_run_refs","dc2_active_review_runs","dc2_test_log_retention_heads","dc2_test_log_retention_runs"].iter().map(|t|quoted(t))).collect::<Vec<_>>().join(",")))?;
         tx.execute_batch("SET CONSTRAINTS ALL DEFERRED")?;

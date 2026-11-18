@@ -7,6 +7,7 @@ use crate::access::Caller;
 use devcoordinator2_api::project::relocation as api;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
@@ -41,7 +42,35 @@ fn directory_identity(path: &Path) -> Result<String, ProtocolError> {
             "source identity requires an exact physical directory without symlinks",
         ));
     }
-    Ok(format!("{:x}:{:x}", metadata.dev(), metadata.ino()))
+    let generation = directory_generation(path)?;
+    Ok(format!(
+        "{:x}:{:x}:{generation:x}",
+        metadata.dev(),
+        metadata.ino()
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn directory_generation(path: &Path) -> Result<u64, ProtocolError> {
+    // FS_IOC_GETVERSION is the ext4 inode generation counter. Unlike ctime or
+    // birthtime it advances on rapid unlink/recreate cycles and remains stable
+    // when the same directory is renamed. Both migration filesystems expose
+    // this ioctl for ordinary source owners.
+    let file = crate::storage::fs::open_directory(path)?;
+    let mut generation: libc::c_long = 0;
+    let request = ((2_u64 << 30)
+        | ((std::mem::size_of::<libc::c_long>() as u64) << 16)
+        | ((b'v' as u64) << 8)
+        | 1) as libc::c_ulong;
+    if unsafe { libc::ioctl(file.as_raw_fd(), request, &mut generation) } != 0 || generation < 0 {
+        return Err(blocked("source generation unavailable"));
+    }
+    Ok(generation as u64)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn directory_generation(_: &Path) -> Result<u64, ProtocolError> {
+    Err(blocked("source generation unavailable on this platform"))
 }
 
 fn native_identity(info: &WorktreeInfo) -> Result<NativeIdentity, ProtocolError> {
@@ -106,12 +135,11 @@ fn pending(connection: &Connection, repository_id: &str) -> Result<bool, Databas
     Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM repository_relocations WHERE repository_id=$1 AND state IN ('prepared','verified'))",[repository_id],|row|row.get(0))?)
 }
 
-fn validate_native_bindings(
+fn validate_repository_binding(
     connection: &Connection,
     repository_id: &str,
-    worktree_id: &str,
     native: &NativeIdentity,
-) -> Result<(bool, bool), DatabaseError> {
+) -> Result<bool, DatabaseError> {
     let repository = connection.query_row("SELECT root_identity,common_identity FROM repository_native_identities WHERE repository_id=$1",[repository_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional()?;
     let repository_bound = repository.is_some();
     if let Some((root, common)) = repository {
@@ -124,6 +152,27 @@ fn validate_native_bindings(
             return Err(blocked("this Git repository already has a registered identity; complete its explicit relocation").into());
         }
     }
+    Ok(repository_bound)
+}
+
+fn validate_native_bindings(
+    connection: &Connection,
+    repository_id: &str,
+    worktree_id: &str,
+    native: &NativeIdentity,
+) -> Result<(bool, bool), DatabaseError> {
+    let retired: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM worktree_native_identity_tombstones WHERE worktree_id=$1)",
+        [worktree_id],
+        |row| row.get(0),
+    )?;
+    if retired {
+        return Err(blocked(
+            "registered checkout identity was retired; complete an explicit relocation before reuse",
+        )
+        .into());
+    }
+    let repository_bound = validate_repository_binding(connection, repository_id, native)?;
     let worktree = connection.query_row("SELECT root_identity,git_identity FROM worktree_native_identities WHERE worktree_id=$1",[worktree_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional()?;
     let worktree_bound = worktree.is_some();
     if let Some((root, git)) = worktree {
@@ -238,6 +287,7 @@ fn registration_for_info(
         )
         .into());
     }
+    let _repository_bound = validate_repository_binding(connection, &repository_id, native)?;
     let worktree = connection
         .query_row(
             "SELECT worktree_id,repository_id FROM worktrees WHERE worktree_path=$1",
@@ -245,22 +295,51 @@ fn registration_for_info(
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
+    let mut stale_reclaim = Some(Vec::new());
     let worktree_id = if let Some((id, owner)) = worktree {
         if owner != repository_id {
             return Err(
                 blocked("checkout path belongs to a different registered repository").into(),
             );
         }
+        let tombstone: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM worktree_native_identity_tombstones WHERE worktree_id=$1)",
+            [&id],
+            |row| row.get(0),
+        )?;
+        if tombstone {
+            return Err(blocked(
+                "registered checkout path was retired; complete an explicit relocation before reuse",
+            )
+            .into());
+        }
         id
     } else {
-        let collision:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM worktrees WHERE worktree_id=$1) OR EXISTS(SELECT 1 FROM worktree_native_identities WHERE root_identity=$2 OR git_identity=$3)",(&allocated_worktree_id,&native.worktree_root,&native.git),|row|row.get(0))?;
-        if collision {
+        let id_collision: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM worktrees WHERE worktree_id=$1)",
+            [&allocated_worktree_id],
+            |row| row.get(0),
+        )?;
+        stale_reclaim = reclaimable_stale_worktree_identities(connection, native)?;
+        if id_collision || stale_reclaim.is_none() {
             return Err(blocked(
                 "registered checkout identity requires an explicit relocation commit",
             )
             .into());
         }
         if let Some((_, now)) = write {
+            if let Some(stale) = stale_reclaim.as_ref() {
+                for worktree_id in stale {
+                    connection.execute(
+                        "INSERT INTO worktree_native_identity_tombstones(worktree_id,repository_id,worktree_path,root_identity,git_identity,retired_at) SELECT n.worktree_id,w.repository_id,w.worktree_path,n.root_identity,n.git_identity,$1 FROM worktree_native_identities n JOIN worktrees w USING(worktree_id) WHERE n.worktree_id=$2 ON CONFLICT(worktree_id) DO NOTHING",
+                        (now, &worktree_id),
+                    )?;
+                    connection.execute(
+                        "DELETE FROM worktree_native_identities WHERE worktree_id=$1",
+                        [&worktree_id],
+                    )?;
+                }
+            }
             connection.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES($1,$2,$3,$4,$4)",(&allocated_worktree_id,&repository_id,&worktree_path,now))?;
         }
         allocated_worktree_id
@@ -275,7 +354,7 @@ fn registration_for_info(
             "UPDATE worktrees SET last_seen_at=$1 WHERE worktree_id=$2",
             (now, &worktree_id),
         )?;
-    } else {
+    } else if stale_reclaim.is_none() {
         validate_native_bindings(connection, &repository_id, &worktree_id, native)?;
     }
     Ok(RegisteredRepository {
@@ -286,6 +365,78 @@ fn registration_for_info(
         display_name,
         registered,
     })
+}
+
+/// A removed, unreferenced linked checkout may leave a native dev/inode pin
+/// behind after an external `git worktree remove`. If the filesystem reuses
+/// that inode for a new checkout, reclaim only the old native pin when its Git
+/// worktree identity differs. A matching Git identity remains a direct-rename
+/// guard, and any durable reference keeps the collision blocked. The owning
+/// worktree row stays as historical registry evidence.
+fn reclaimable_stale_worktree_identities(
+    connection: &Connection,
+    native: &NativeIdentity,
+) -> Result<Option<Vec<String>>, DatabaseError> {
+    // Tombstones preserve retired history and old-path rejection. Their old
+    // inode values do not reserve a different new path; active bindings below
+    // remain the direct-rename and replacement guard.
+    let rows = {
+        let mut query = connection.prepare(
+            "SELECT n.worktree_id,n.git_identity,w.worktree_path,r.root_path FROM worktree_native_identities n JOIN worktrees w USING(worktree_id) JOIN repositories r USING(repository_id) WHERE n.root_identity=$1 OR n.git_identity=$2",
+        )?;
+        query
+            .query_map((&native.worktree_root, &native.git), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    PathBuf::from(row.get::<_, String>(2)?),
+                    PathBuf::from(row.get::<_, String>(3)?),
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    if rows.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let mut stale = Vec::with_capacity(rows.len());
+    for (worktree_id, old_git, path, root) in rows {
+        // The canonical repository root is never an expendable linked
+        // checkout. It also makes an exact source replacement ambiguous.
+        if path == root || old_git == native.git {
+            return Ok(None);
+        }
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Ok(None),
+        }
+        let referenced: bool = connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM deployments WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM project_checkouts WHERE worktree_id=$1 AND exists_on_disk IS DISTINCT FROM false
+                UNION ALL SELECT 1 FROM project_sources s JOIN project_checkouts c ON c.project_id=s.project_id AND c.worktree_id=s.primary_checkout_id WHERE s.primary_checkout_id=$1 AND c.exists_on_disk IS DISTINCT FROM false
+                UNION ALL SELECT 1 FROM project_checkout_aliases a JOIN project_checkouts c ON c.project_id=a.project_id AND (c.worktree_id=a.alias_worktree_id OR c.worktree_id=a.worktree_id) WHERE (a.alias_worktree_id=$1 OR a.worktree_id=$1) AND c.exists_on_disk IS DISTINCT FROM false
+                UNION ALL SELECT 1 FROM project_checkout_artifacts WHERE worktree_id=$1 AND active
+                UNION ALL SELECT 1 FROM project_storage WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM generation_source_origins WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM registry_path_aliases WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM repository_relocations WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM visual_feedback WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM repository_retirement_receipts WHERE removed_worktree_ids_json @> jsonb_build_array($1)
+                UNION ALL SELECT 1 FROM test_log_retention_projection WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM dc2_delivery_protection_heads WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM dc2_test_log_retention_heads WHERE worktree_id=$1
+                UNION ALL SELECT 1 FROM dc2_test_log_retention_runs WHERE worktree_id=$1
+            )",
+            [&worktree_id],
+            |row| row.get(0),
+        )?;
+        if referenced {
+            return Ok(None);
+        }
+        stale.push(worktree_id);
+    }
+    Ok(Some(stale))
 }
 
 pub(super) fn register(
