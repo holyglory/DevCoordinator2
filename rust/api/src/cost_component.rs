@@ -78,6 +78,11 @@ struct WireUsageCost {
     cached_input_usd_micros: Option<CostComponent>,
     cache_write_usd_micros: Option<CostComponent>,
     output_usd_micros: Option<CostComponent>,
+    // The collector reports reasoning cost as a fifth measured component.
+    // The public Console contract does not expose this field, but the
+    // consumer must still validate and accept its wire shape.
+    #[serde(default)]
+    reasoning_usd_micros: Option<CostComponent>,
     input_tokens: Option<i64>,
     cached_input_tokens: Option<i64>,
     cache_write_tokens: Option<u64>,
@@ -111,6 +116,13 @@ impl<'de> Deserialize<'de> for UsageCost {
                 value.cache_write_usd_micros,
                 value.output_usd_micros,
             ],
+        )
+        .map_err(D::Error::custom)?;
+        // Validate the producer's reasoning component even though the public
+        // response intentionally keeps the historical four-price shape.
+        let _ = decode_cost_components(
+            &value.status,
+            [value.reasoning_usd_micros, None, None, None],
         )
         .map_err(D::Error::custom)?;
         Ok(Self {
