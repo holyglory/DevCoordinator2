@@ -19,6 +19,19 @@ struct RefreshCursor {
     had_error: bool,
     #[serde(default)]
     failed_sources: BTreeSet<String>,
+    #[serde(default)]
+    unavailable_checkouts: BTreeSet<String>,
+    #[serde(default)]
+    remote_branch_observations: BTreeMap<String, RemoteBranchObservation>,
+    #[serde(default)]
+    observations_initialized: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct RemoteBranchObservation {
+    github_url: String,
+    job_id: String,
+    state: String,
+    last_success: Option<String>,
 }
 struct Pending {
     id: String,
@@ -27,6 +40,13 @@ struct Pending {
     remote: bool,
     actor: String,
     cursor: RefreshCursor,
+}
+impl Pending {
+    fn checkout_unavailable(&mut self, physical: &Physical, path: &str) {
+        self.cursor.had_error = true;
+        self.cursor.failed_sources.insert(physical.source.clone());
+        self.cursor.unavailable_checkouts.insert(path.into());
+    }
 }
 #[derive(Serialize, Deserialize)]
 pub(super) struct CommitRequest {
@@ -93,15 +113,46 @@ impl ProjectService {
         let Some(mut p) = pending else {
             return Ok(0);
         };
+        if p.remote && !p.cursor.observations_initialized {
+            // Carry the bounded source projection forward once, from the
+            // previous terminal remote job. Status reads never search history.
+            p.cursor.remote_branch_observations = self.database.read(|c| {
+                let mut observations = load_remote_observations(c, &p.project, true)?;
+                let current = c.prepare("SELECT repository_id FROM project_sources WHERE project_id=$1 LIMIT 129")?.query_map([&p.project], |r| r.get::<_,String>(0))?.collect::<crate::database::Result<BTreeSet<_>>>()?;
+                observations.retain(|source, _| current.contains(source));
+                Ok(observations)
+            }).map_err(database_error)?;
+            for (source, url) in self.remote_sources(&p)? {
+                if let Some(github_url) = url {
+                    let last_success = p
+                        .cursor
+                        .remote_branch_observations
+                        .get(&source)
+                        .filter(|row| row.github_url == github_url)
+                        .and_then(|row| row.last_success.clone());
+                    p.cursor.remote_branch_observations.insert(
+                        source,
+                        RemoteBranchObservation {
+                            github_url,
+                            job_id: p.id.clone(),
+                            state: "refreshing".into(),
+                            last_success,
+                        },
+                    );
+                }
+            }
+            p.cursor.observations_initialized = true;
+        }
         let attempt = (|| -> Result<(), ProtocolError> {
             if p.cursor.physical < p.physical.len() {
-                let id = &p.physical[p.cursor.physical];
-                let physical = self.physical(&p.project, id)?;
+                let id = p.physical[p.cursor.physical].clone();
+                let physical = self.physical(&p.project, &id)?;
                 self.verify_physical(&physical)?;
                 match p.cursor.stage.as_str() {
                     "status" => {
+                        let after = p.cursor.after.clone();
                         if let Some(last) =
-                            self.refresh_checkout(&p, &physical, &p.cursor.after, budget)?
+                            self.refresh_checkout(&mut p, &physical, &after, budget)?
                         {
                             p.cursor.after = last;
                         } else {
@@ -111,7 +162,7 @@ impl ProjectService {
                         }
                     }
                     _ => {
-                        if self.refresh_inventory(&p, &physical, budget)? {
+                        if self.refresh_inventory(&mut p, &physical, budget)? {
                             p.cursor.stage = "status".into();
                             p.cursor.after.clear();
                         }
@@ -130,6 +181,11 @@ impl ProjectService {
                 }
             } else if let Some((source, _)) = self.remote_sources(&p)?.get(p.cursor.remote_source) {
                 p.cursor.failed_sources.insert(source.clone());
+                if p.cursor.stage != "pull_requests"
+                    && let Some(observation) = p.cursor.remote_branch_observations.get_mut(source)
+                {
+                    observation.state = "failed".into();
+                }
             }
             // Typed public failures never include subprocess output, paths, or credentials.
             let code = if error.code == ErrorCode::PermissionDenied {
@@ -157,7 +213,7 @@ impl ProjectService {
             && (!p.remote || p.cursor.remote_source >= sources.len());
         let now = timestamp();
         self.database.transaction(|c|{
-            c.execute("UPDATE project_jobs SET cursor=$2,state=$3,finished_at=$4,revision=revision+1 WHERE job_id=$1",params![p.id,json(&p.cursor)?,if finished {if p.cursor.had_error{"partial"}else{"succeeded"}}else{"running"},finished.then_some(now.clone())])?;
+            c.execute("UPDATE project_jobs SET cursor=$2,state=$3,finished_at=$4,error=coalesce(error,$5),revision=revision+1 WHERE job_id=$1",params![p.id,json(&p.cursor)?,if finished {if p.cursor.had_error{"partial"}else{"succeeded"}}else{"running"},finished.then_some(now.clone()),p.cursor.had_error.then_some("source refresh unavailable; previous observations retained")])?;
             if finished {
                 for (source,_) in &sources {
                     if p.cursor.failed_sources.contains(source){c.execute("UPDATE project_sources SET refresh_state='failed',error='One or more source observations failed; previous data retained' WHERE project_id=$1 AND repository_id=$2",params![p.project,source])?;}
@@ -208,7 +264,7 @@ impl ProjectService {
     }
     fn refresh_inventory(
         &self,
-        p: &Pending,
+        p: &mut Pending,
         physical: &Physical,
         budget: &mut Budget,
     ) -> Result<bool, ProtocolError> {
@@ -239,6 +295,7 @@ impl ProjectService {
         for worktree in &worktrees {
             if worktree.bare
                 || registrations.contains_key(&worktree.path)
+                || p.cursor.unavailable_checkouts.contains(&worktree.path)
                 || !Path::new(&worktree.path).is_dir()
             {
                 continue;
@@ -246,18 +303,35 @@ impl ProjectService {
             // New identities persist in the registry between bounded steps;
             // a large first discovery never restarts from an empty counter.
             if adopted >= 4 || budget.remaining() < Duration::from_millis(250) {
-                return Ok(false);
+                // Persist the parsed refs and every worktree row below even
+                // when bounded adoption has to continue in a later status
+                // step. Returning before that transaction would discard a
+                // complete branch snapshot behind one slow or inaccessible
+                // checkout.
+                break;
             }
-            verify_checkout_common(physical, Path::new(&worktree.path), budget)?;
-            let registered = registry.register(Path::new(&worktree.path), physical.uid, gid)?;
-            if registered.repository_id != physical.id || registered.worktree_path != worktree.path
-            {
-                return Err(ProtocolError::new(
-                    ErrorCode::ConfigurationConflict,
-                    "Git checkout does not match its registered physical source",
-                ));
+            let registration = (|| {
+                verify_checkout_common(physical, Path::new(&worktree.path), budget)?;
+                let registered = registry.register(Path::new(&worktree.path), physical.uid, gid)?;
+                if registered.repository_id != physical.id
+                    || registered.worktree_path != worktree.path
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::ConfigurationConflict,
+                        "Git checkout does not match its registered physical source",
+                    ));
+                }
+                Ok(registered)
+            })();
+            match registration {
+                Ok(registered) => {
+                    registrations.insert(worktree.path.clone(), registered.worktree_id);
+                }
+                Err(error) if observation_unavailable(&error) => {
+                    p.checkout_unavailable(physical, &worktree.path)
+                }
+                Err(error) => return Err(error),
             }
-            registrations.insert(worktree.path.clone(), registered.worktree_id);
             adopted += 1;
         }
         self.database.transaction(|c|{
@@ -284,6 +358,7 @@ impl ProjectService {
                 row.relative_path=relative;row.root_kind=kind;row.branch_name=worktree.branch.clone();row.branch_id=worktree.branch.as_ref().and_then(|name|branch_ids.get(name).cloned());row.head=worktree.head.clone();row.revision+=1;
                 row.registration_state=if registrations.contains_key(&worktree.path){"registered".into()}else{c.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM worktrees WHERE worktree_id=$1 AND repository_id=$2) THEN 'registered' ELSE 'unregistered' END",params![wid,physical.id],|r|r.get(0))?};
                 row.protection_reasons.clear();
+                if p.cursor.unavailable_checkouts.contains(&worktree.path){row.dirty=None;row.can_remove=false;row.protection_reasons.push("checkout inspection unavailable".into());}
                 if worktree.locked{row.protection_reasons.push("Git worktree is locked".into());}
                 if worktree.prunable{row.protection_reasons.push("Git reports a missing or prunable checkout".into());}
                 decorate_deployment_checkout(c,physical,&mut row)?;
@@ -324,7 +399,7 @@ impl ProjectService {
     }
     fn refresh_checkout(
         &self,
-        p: &Pending,
+        p: &mut Pending,
         physical: &Physical,
         after: &str,
         budget: &mut Budget,
@@ -340,54 +415,80 @@ impl ProjectService {
                 .ok_or_else(|| invalid("checkout path is unavailable"))?,
         );
         row.exists = Some(path.is_dir());
-        if row.exists == Some(true) && !row.immutable_generation {
-            let current = Physical {
-                path: path.clone(),
-                ..physical.clone()
-            };
-            verify_checkout_common(physical, &path, budget)?;
-            let gid = crate::systemd::primary_gid(physical.uid)
-                .map_err(|_| denied("registered source owner is unavailable"))?;
-            let registered = self.registry.register(&path, physical.uid, gid)?;
-            if registered.repository_id != physical.id || registered.worktree_id != row.worktree_id
+        let inspection = (|| -> Result<Option<bool>, ProtocolError> {
+            if p.cursor
+                .unavailable_checkouts
+                .contains(path.to_str().unwrap_or_default())
             {
-                return Err(ProtocolError::new(
-                    ErrorCode::ConfigurationConflict,
-                    "checkout execution identity changed",
-                ));
+                return Ok(None);
             }
-            row.dirty = Some(
-                !git(
-                    &current,
-                    &[
-                        "status",
-                        "--porcelain=v1",
-                        "-z",
-                        "--untracked-files=all",
-                        "--ignore-submodules=none",
-                    ],
-                    budget,
-                )?
-                .is_empty(),
-            );
-        } else if row.immutable_generation && row.exists == Some(true) {
-            // Generation bytes are inspected below without registering an
-            // immutable copy as a source checkout or running Git inside it.
-            row.dirty = None;
-        } else {
-            row.dirty = None;
-        }
+            if row.exists == Some(true) && !row.immutable_generation {
+                let current = Physical {
+                    path: path.clone(),
+                    ..physical.clone()
+                };
+                verify_checkout_common(physical, &path, budget)?;
+                let gid = crate::systemd::primary_gid(physical.uid)
+                    .map_err(|_| denied("registered source owner is unavailable"))?;
+                let registered = self.registry.register(&path, physical.uid, gid)?;
+                if registered.repository_id != physical.id
+                    || registered.worktree_id != row.worktree_id
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::ConfigurationConflict,
+                        "checkout execution identity changed",
+                    ));
+                }
+                Ok(Some(
+                    !git(
+                        &current,
+                        &[
+                            "status",
+                            "--porcelain=v1",
+                            "-z",
+                            "--untracked-files=all",
+                            "--ignore-submodules=none",
+                        ],
+                        budget,
+                    )?
+                    .is_empty(),
+                ))
+            } else {
+                // Immutable generations are measured without executing Git or
+                // registering their source identity.
+                Ok(None)
+            }
+        })();
+        row.dirty = match inspection {
+            Ok(dirty) => dirty,
+            Err(error) if observation_unavailable(&error) => {
+                p.checkout_unavailable(physical, path.to_str().unwrap_or_default());
+                None
+            }
+            Err(error) => return Err(error),
+        };
         row.protection_reasons.retain(|r| {
             r != "checkout has not been inspected"
                 && r != "checkout contains local changes"
                 && r != "checkout is missing"
+                && r != "checkout inspection unavailable"
         });
+        let unavailable = p
+            .cursor
+            .unavailable_checkouts
+            .contains(path.to_str().unwrap_or_default());
+        if unavailable {
+            row.protection_reasons
+                .push("checkout inspection unavailable".into());
+        }
         if row.dirty != Some(false) && !row.immutable_generation {
             row.protection_reasons.push(
                 if row.exists == Some(false) {
                     "checkout is missing"
-                } else {
+                } else if row.dirty == Some(true) {
                     "checkout contains local changes"
+                } else {
+                    "checkout has not been inspected"
                 }
                 .into(),
             );
@@ -404,10 +505,22 @@ impl ProjectService {
         row.revision += 1;
         let now = timestamp();
         let roots = self.root_inputs(&p.project)?;
-        self.attach_storage(&p.project, &p.id, physical, &mut row, &roots, &now, budget)?;
+        if unavailable {
+            row.source_bytes = None;
+            row.build_bytes = None;
+            row.local_bytes = None;
+            for location in &mut row.locations {
+                location.allocated_bytes = None;
+            }
+        } else {
+            self.attach_storage(&p.project, &p.id, physical, &mut row, &roots, &now, budget)?;
+        }
         let wid = row.worktree_id.clone();
         self.database
             .transaction(|c| {
+                if unavailable {
+                    c.execute("UPDATE project_storage SET allocated_bytes=NULL,measured_at=NULL WHERE project_id=$1 AND worktree_id=$2",params![p.project,row.worktree_id])?;
+                }
                 persist_checkout(c, &p.project, &physical.id, &row, &now, &p.actor)?;
                 observed(c, &p.project, &p.actor, &now)
             })
@@ -655,6 +768,15 @@ impl ProjectService {
             }).map_err(database_error)?;
             p.cursor.remote_cursor = page.next_cursor;
             if page.complete {
+                p.cursor.remote_branch_observations.insert(
+                    source.clone(),
+                    RemoteBranchObservation {
+                        github_url: url.clone(),
+                        job_id: p.id.clone(),
+                        state: "fresh".into(),
+                        last_success: Some(now),
+                    },
+                );
                 p.cursor.stage = "pull_requests".into();
                 p.cursor.remote_after.clear();
             }
@@ -889,6 +1011,70 @@ impl ProjectService {
         Ok(())
     }
 }
+
+pub(super) fn github_observation(
+    c: &Connection,
+    project: &str,
+    source: &str,
+    github_url: Option<&str>,
+) -> Result<Option<api::GithubObservation>, DatabaseError> {
+    let Some(url) = github_url else {
+        return Ok(None);
+    };
+    let job = c.query_row("SELECT job_id,state,cursor FROM project_jobs j WHERE project_id=$1 AND kind='refresh' AND include_remote AND EXISTS(SELECT 1 FROM project_repository_memberships m WHERE m.project_id=j.project_id AND m.repository_id=$2 AND m.physical_repository_id IN(SELECT jsonb_array_elements_text(j.authorized_repositories))) ORDER BY queued_at DESC,job_id DESC LIMIT 1",params![project,source],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).optional()?;
+    let Some((job_id, state, cursor)) = job else {
+        return Ok(None);
+    };
+    let cursor: RefreshCursor = cursor
+        .as_deref()
+        .map(from_json)
+        .transpose()?
+        .unwrap_or_default();
+    let observed = cursor
+        .remote_branch_observations
+        .get(source)
+        .filter(|observation| observation.github_url == url);
+    let (state, last_success) = observed
+        .map(|observation| (observation.state.clone(), observation.last_success.clone()))
+        .unwrap_or_else(|| {
+            (
+                if matches!(state.as_str(), "queued" | "running") {
+                    "refreshing".into()
+                } else {
+                    "failed".into()
+                },
+                None,
+            )
+        });
+    Ok(Some(api::GithubObservation {
+        job_id,
+        state,
+        last_success,
+    }))
+}
+
+fn load_remote_observations(
+    c: &Connection,
+    project: &str,
+    terminal_only: bool,
+) -> Result<BTreeMap<String, RemoteBranchObservation>, DatabaseError> {
+    let state_filter = if terminal_only {
+        "AND state IN ('succeeded','partial','failed')"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT cursor::text FROM project_jobs WHERE project_id=$1 AND kind='refresh' AND include_remote {state_filter} ORDER BY coalesce(finished_at,queued_at) DESC,job_id DESC LIMIT 1"
+    );
+    let raw = c
+        .query_row(&sql, [project], |r| r.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten();
+    let Some(raw) = raw else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(from_json::<RefreshCursor>(&raw)?.remote_branch_observations)
+}
 fn bounded_measure(path: &Path, budget: &Budget) -> Option<crate::storage::fs::Measurement> {
     let remaining = budget.remaining().min(Duration::from_millis(250));
     if remaining < Duration::from_millis(5) {
@@ -925,14 +1111,31 @@ fn git(physical: &Physical, args: &[&str], budget: &Budget) -> Result<Vec<u8>, P
         args,
         GIT_TIMEOUT.min(budget.remaining()),
     )
-    .map_err(|_| ProtocolError::new(ErrorCode::InternalError, "Git observation unavailable"))?;
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            denied("source owner unavailable")
+        } else {
+            ProtocolError::new(ErrorCode::InternalError, "Git observation unavailable")
+        }
+    })?;
     if !output.status.success() {
+        if output
+            .stderr
+            .windows(b"Permission denied".len())
+            .any(|window| window == b"Permission denied")
+        {
+            return Err(denied("source owner unavailable"));
+        }
         return Err(ProtocolError::new(
             ErrorCode::InternalError,
             "Git observation failed; previous snapshot retained",
         ));
     }
     Ok(output.stdout)
+}
+
+fn observation_unavailable(error: &ProtocolError) -> bool {
+    error.code == ErrorCode::PermissionDenied
 }
 fn parse_worktrees(bytes: &[u8]) -> Result<Vec<Worktree>, ProtocolError> {
     let mut rows = Vec::new();
@@ -1160,6 +1363,15 @@ fn verify_checkout_common(
     path: &Path,
     budget: &Budget,
 ) -> Result<(), ProtocolError> {
+    // A directory can still stat successfully after its execute/read bits are
+    // removed. Probe one directory handle so an inaccessible owner boundary is
+    // typed as unavailable before Git identity checks; identity mismatches and
+    // malformed repositories continue through the strict guards below.
+    if let Err(error) = std::fs::read_dir(path)
+        && error.kind() == std::io::ErrorKind::PermissionDenied
+    {
+        return Err(denied("source owner unavailable"));
+    }
     crate::storage::fs::identity(path)
         .map_err(|_| invalid("checkout physical identity is unavailable"))?;
     let current = Physical {

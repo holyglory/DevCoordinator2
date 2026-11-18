@@ -17,7 +17,7 @@
   "deployments": "Deployments",
   "refresh": "Refresh",
   "refreshing": "Refreshing GitHub and local copies…",
-  "refreshIncomplete": "Refresh incomplete · showing saved data",
+  "refreshIncomplete": "Refresh incomplete · some data unavailable",
   "updated": "Updated",
   "notRefreshed": "Not refreshed yet",
   "notObserved": "Not observed",
