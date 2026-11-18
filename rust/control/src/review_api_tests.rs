@@ -167,6 +167,10 @@ fn performance_cost_components_accept_scalar_null_and_measured_transport_values(
                 "unavailable"
             });
             unattributed_cost["estimated_usd_micros"] = json!(expected.map(|_| 0));
+            if expected.is_some() {
+                unattributed_cost["reasoning_usd_micros"] =
+                    json!({"measured":0,"exact":0,"unknown":0});
+            }
             for field in [
                 "input_usd_micros",
                 "cached_input_usd_micros",
