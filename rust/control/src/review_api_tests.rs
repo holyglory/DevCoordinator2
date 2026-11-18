@@ -142,11 +142,16 @@ fn performance_cost_components_accept_scalar_null_and_measured_transport_values(
             } else {
                 json!([])
             };
+            let reasoning_component = if status == "complete" {
+                json!({"measured":0,"exact":0,"unknown":0})
+            } else {
+                json!({"measured":0,"exact":null,"unknown":unknown})
+            };
             let review_cost = json!({
                 "status":status,"basis":"api_equivalent","currency":"USD","processing_tier":"standard",
                 "estimated_usd_micros":expected,"input_usd_micros":wire_component,
                 "cached_input_usd_micros":wire_remainder,"cache_write_usd_micros":wire_remainder,"output_usd_micros":wire_remainder,
-                "reasoning_usd_micros":{"measured":0,"exact":null,"unknown":unknown},
+                "reasoning_usd_micros":reasoning_component,
                 "unknown_observations":unknown,"rate_card_refs":["fixture-standard"],"model_requests":2,
             });
             value["review"]["totals"]["cost"] = review_cost.clone();
