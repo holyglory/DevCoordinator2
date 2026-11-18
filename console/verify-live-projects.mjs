@@ -8,7 +8,10 @@ import {createRequire} from 'node:module';
 export function hasFreshGithubObservation(repository, now=Date.now()) {
   const observation=repository.github_observation;
   const observed=Date.parse(observation?.last_success||'');
-  return Boolean(repository.github_url && observation?.state==='fresh' && observation.job_id && Number.isFinite(observed) && observed<=now && now-observed<=10*60*1000);
+  // A queued/running refresh may coexist with a still-valid complete remote
+  // snapshot. `last_success` proves the snapshot age; the state remains
+  // `refreshing` so callers can disclose that a newer observation is pending.
+  return Boolean(repository.github_url && ['fresh','refreshing'].includes(observation?.state) && observation.job_id && Number.isFinite(observed) && observed<=now && now-observed<=10*60*1000);
 }
 
 export async function verifyLiveProjects({root,out,base,request,check,checks}) {
