@@ -30,7 +30,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 3;
-pub const DATABASE_SCHEMA_VERSION: u32 = 40;
+pub const DATABASE_SCHEMA_VERSION: u32 = 39;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;

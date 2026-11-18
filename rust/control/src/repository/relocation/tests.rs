@@ -89,8 +89,10 @@ struct World {
 }
 impl World {
     fn new() -> Self {
+        Self::with_temporary(tempfile::tempdir().unwrap())
+    }
+    fn with_temporary(temporary: tempfile::TempDir) -> Self {
         let caller = caller();
-        let temporary = tempfile::tempdir().unwrap();
         own(temporary.path());
         let old = temporary.path().join("old");
         let new = temporary.path().join("new");
@@ -763,178 +765,151 @@ fn real_git_prepare_refuses_active_deployment_and_public_caller_then_can_cancel(
 #[test]
 #[ignore = "requires root driver with explicit non-root Git/PostgreSQL fixture UID/GID"]
 fn real_git_registration_rejects_replacement_before_any_relocation() {
-    let world = World::new();
-    let stale = world.old.with_file_name("stale-candidate");
-    git(
-        &world.old,
-        &["worktree", "add", "-q", "--detach", stale.to_str().unwrap()],
-    );
-    let stale_registration = world
-        .registry
-        .register(&stale, world.caller.uid, world.caller.gid)
-        .unwrap();
-    let stale_identity = native_identity(
-        &resolve_worktree(&stale, Some((world.caller.uid, world.caller.gid))).unwrap(),
-    )
-    .unwrap();
-    git(
-        &world.old,
-        &["worktree", "remove", "--force", stale.to_str().unwrap()],
-    );
-    assert!(!stale.exists());
-    let recreated = world.old.with_file_name("recreated-candidate");
-    git(
-        &world.old,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "--detach",
-            recreated.to_str().unwrap(),
-        ],
-    );
-    let recreated_identity = native_identity(
-        &resolve_worktree(&recreated, Some((world.caller.uid, world.caller.gid))).unwrap(),
-    )
-    .unwrap();
-    assert_ne!(
-        stale_identity.worktree_root, recreated_identity.worktree_root,
-        "directory inode generation must differ after recreation"
-    );
-    assert_ne!(
-        stale_identity.git, recreated_identity.git,
-        "Git inode generation must differ after recreation"
-    );
-    let recreated_git_identity = stale_identity.git.clone();
-    assert_ne!(recreated_git_identity, recreated_identity.git);
-    world
-        .database
-        .transaction(|connection| {
-            connection.execute(
-                "UPDATE worktree_native_identities SET root_identity=$1,git_identity=$2 WHERE worktree_id=$3",
-                (
-                    &recreated_identity.worktree_root,
-                    &recreated_git_identity,
-                    &stale_registration.worktree_id,
-                ),
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    let recreated_info =
-        resolve_worktree(&recreated, Some((world.caller.uid, world.caller.gid))).unwrap();
-    assert_eq!(
-        world
-            .registry
-            .preview_source_identity(&recreated_info)
-            .unwrap()
-            .1,
-        ids::worktree_id(&recreated).unwrap(),
-        "stale inode reuse is previewable without mutating native pins"
-    );
-    assert!(
-        world
-            .registry
-            .observed_identity_for_info(&recreated_info)
-            .is_err(),
-        "an unregistered recreated checkout is not an observation target"
-    );
-    let recreated_registration = world
-        .registry
-        .register(&recreated, world.caller.uid, world.caller.gid)
-        .unwrap();
-    assert_ne!(
-        recreated_registration.worktree_id,
-        stale_registration.worktree_id
-    );
-    assert!(
-        world
-            .registry
-            .observed_identity_for_info(&recreated_info)
-            .is_ok()
-    );
-    assert!(world.registry.identity_for_info(&recreated_info).is_ok());
-    world
-        .database
-        .read(|connection| {
-            assert_eq!(
-                connection.query_row(
-                    "SELECT count(*) FROM worktree_native_identity_tombstones WHERE worktree_id=$1",
-                    [&stale_registration.worktree_id],
-                    |row| row.get::<_, i64>(0),
-                )?,
-                1
+    // Keep ordinary fixtures on /tmp. Exercise this generation regression on
+    // an on-disk filesystem and explicit tmpfs without changing TMPDIR.
+    let mut devices = std::collections::BTreeSet::new();
+    for parent in ["/tmp", "/var/tmp", "/dev/shm"] {
+        let world = World::with_temporary(tempfile::tempdir_in(parent).unwrap());
+        devices.insert(std::fs::metadata(&world.old).unwrap().dev());
+        let probe = world.old.with_file_name("generation-probe");
+        let renamed_probe = probe.with_extension("renamed");
+        let mut generations = std::collections::BTreeSet::new();
+        for _ in 0..256 {
+            std::fs::create_dir(&probe).unwrap();
+            let identity = directory_identity(&probe).unwrap();
+            assert!(
+                generations.insert(identity.clone()),
+                "rapid directory recreation must never inherit an earlier identity on {parent}"
             );
-            assert_eq!(
-                connection.query_row(
-                    "SELECT count(*) FROM worktree_native_identities WHERE worktree_id=$1",
-                    [&stale_registration.worktree_id],
-                    |row| row.get::<_, i64>(0),
-                )?,
-                0
+            write_owned(probe.join("content"), "changed contents\n");
+            assert_eq!(directory_identity(&probe).unwrap(), identity);
+            std::fs::rename(&probe, &renamed_probe).unwrap();
+            assert_eq!(directory_identity(&renamed_probe).unwrap(), identity);
+            std::fs::remove_dir_all(&renamed_probe).unwrap();
+        }
+
+        let mut roots = std::collections::BTreeSet::new();
+        let mut git_directories = std::collections::BTreeSet::new();
+        for cycle in 0..8 {
+            let checkout = world.old.with_file_name(format!("candidate-{cycle}"));
+            git(
+                &world.old,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "--detach",
+                    checkout.to_str().unwrap(),
+                ],
             );
-            Ok(())
-        })
-        .unwrap();
-    for cycle in 2..=3 {
-        let next = world
-            .old
-            .with_file_name(format!("recreated-candidate-{cycle}"));
-        git(
-            &world.old,
-            &["worktree", "add", "-q", "--detach", next.to_str().unwrap()],
-        );
-        let next_identity = native_identity(
-            &resolve_worktree(&next, Some((world.caller.uid, world.caller.gid))).unwrap(),
-        )
-        .unwrap();
+            let info =
+                resolve_worktree(&checkout, Some((world.caller.uid, world.caller.gid))).unwrap();
+            let native = native_identity(&info).unwrap();
+            assert!(roots.insert(native.worktree_root.clone()));
+            assert!(git_directories.insert(native.git.clone()));
+            assert_eq!(
+                world.registry.preview_source_identity(&info).unwrap().1,
+                ids::worktree_id(&checkout).unwrap()
+            );
+            assert!(world.registry.observed_identity_for_info(&info).is_err());
+            world
+                .registry
+                .register(&checkout, world.caller.uid, world.caller.gid)
+                .unwrap();
+            assert!(world.registry.observed_identity_for_info(&info).is_ok());
+            write_owned(checkout.join("untracked.txt"), "changed contents\n");
+            assert_eq!(native_identity(&info).unwrap(), native);
+            let moved = checkout.with_extension("moved");
+            git(
+                &world.old,
+                &[
+                    "worktree",
+                    "move",
+                    checkout.to_str().unwrap(),
+                    moved.to_str().unwrap(),
+                ],
+            );
+            let moved_info =
+                resolve_worktree(&moved, Some((world.caller.uid, world.caller.gid))).unwrap();
+            assert_eq!(native_identity(&moved_info).unwrap(), native);
+            assert!(world.registry.preview_source_identity(&moved_info).is_err());
+            assert!(
+                world
+                    .registry
+                    .observed_identity_for_info(&moved_info)
+                    .is_err()
+            );
+            assert!(
+                world
+                    .registry
+                    .register(&moved, world.caller.uid, world.caller.gid)
+                    .is_err(),
+                "a native collision still requires an explicit relocation"
+            );
+            git(
+                &world.old,
+                &["worktree", "remove", "--force", moved.to_str().unwrap()],
+            );
+            git(
+                &world.old,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "--detach",
+                    checkout.to_str().unwrap(),
+                ],
+            );
+            let replacement =
+                resolve_worktree(&checkout, Some((world.caller.uid, world.caller.gid))).unwrap();
+            let replacement_native = native_identity(&replacement).unwrap();
+            assert!(roots.insert(replacement_native.worktree_root));
+            assert!(git_directories.insert(replacement_native.git));
+            assert!(
+                world
+                    .registry
+                    .preview_source_identity(&replacement)
+                    .is_err()
+            );
+            assert!(
+                world
+                    .registry
+                    .observed_identity_for_info(&replacement)
+                    .is_err()
+            );
+            assert!(
+                world
+                    .registry
+                    .register(&checkout, world.caller.uid, world.caller.gid)
+                    .is_err(),
+                "a recreated checkout cannot inherit the old path's identity"
+            );
+            git(
+                &world.old,
+                &["worktree", "remove", "--force", checkout.to_str().unwrap()],
+            );
+        }
         world
             .database
-            .transaction(|connection| {
-                connection.execute(
-                    "UPDATE worktree_native_identity_tombstones SET root_identity=$1,git_identity=$2 WHERE worktree_id=$3",
-                    (
-                        &next_identity.worktree_root,
-                        &next_identity.git,
-                        &stale_registration.worktree_id,
-                    ),
-                )?;
+            .read(|connection| {
+                assert_eq!(
+                    connection.query_row(
+                        "SELECT count(*) FROM worktree_native_identities",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?,
+                    9,
+                    "removed checkouts retain their native identity pins"
+                );
                 Ok(())
             })
             .unwrap();
-        world
-            .registry
-            .register(&next, world.caller.uid, world.caller.gid)
-            .unwrap();
-        git(
-            &world.old,
-            &["worktree", "remove", "--force", next.to_str().unwrap()],
-        );
     }
-    git(
-        &world.old,
-        &["worktree", "add", "-q", "--detach", stale.to_str().unwrap()],
-    );
     assert!(
-        world
-            .registry
-            .register(&stale, world.caller.uid, world.caller.gid)
-            .is_err(),
-        "a retired old path remains blocked by its tombstone"
+        devices.len() >= 2,
+        "generation regression requires tmpfs and disk"
     );
-    let stale_info = resolve_worktree(&stale, Some((world.caller.uid, world.caller.gid))).unwrap();
-    assert!(world.registry.preview_source_identity(&stale_info).is_err());
-    assert!(
-        world
-            .registry
-            .observed_identity_for_info(&stale_info)
-            .is_err()
-    );
-    assert!(world.registry.identity_for_info(&stale_info).is_err());
-    git(
-        &world.old,
-        &["worktree", "remove", "--force", stale.to_str().unwrap()],
-    );
+    let world = World::new();
     let preserved = world.old.with_extension("preserved");
     std::fs::rename(&world.old, &preserved).unwrap();
     assert!(

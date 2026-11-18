@@ -140,7 +140,6 @@ fn full_schema_copy_preserves_ids_history_json_numbers_blobs_and_restart() {
                 "project_artifact_requests",
                 "repository_relocations",
                 "relocation_consumers",
-                "worktree_native_identity_tombstones",
             ] {
                 assert_eq!(
                     c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
