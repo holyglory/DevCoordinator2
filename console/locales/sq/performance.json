@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Totali i rishikimit: {tokens}",
   "periodScopeTotal": "Totali i periudhës: {tokens}",
   "reviewTotalLabel": "Totali i rishikimit",
-  "periodTotalLabel": "Totali i periudhës"
+  "periodTotalLabel": "Totali i periudhës",
+  "summaryRecorded": "Regjistruar",
+  "summaryPeriod": "Periudha",
+  "summaryReviews": "Rishikime",
+  "apiEquivalentCost": "Kosto ekuivalente sipas çmimeve të API-së",
+  "costData": "Të dhëna për kostot",
+  "requests": "Kërkesa",
+  "notRecorded": "Nuk është regjistruar",
+  "noCostBreakdown": "Pa zbërthim të kostos",
+  "noMatchingRates": "Nuk ka tarifa përkatëse",
+  "pricingUnavailable": "Çmimet nuk janë të disponueshme",
+  "pricesComplete": "Me çmim të llogaritur",
+  "pricesPartial": "Mungojnë disa çmime",
+  "missingRatesNote": "Numri i tokenëve është regjistruar; mungojnë çmimet përkatëse të modeleve.",
+  "missingBreakdownNote": "Numri i kërkesave dhe hollësitë e kostove sipas aktivitetit nuk janë të disponueshme.",
+  "recordedData": "Të dhëna të regjistruara"
 }

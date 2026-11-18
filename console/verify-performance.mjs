@@ -31,8 +31,9 @@ export function performanceFixture(operation, params, scenario = {}) {
       activityRows.splice(0, activityRows.length, ...Array.from({ length: 40 }, (_, index) => ({ phase: phases[index % 5], activity: names[Math.floor(index / 5)], total_tokens: total / 40, operations: null, cost: unavailableCost })));
       const activities = {};
       for (const row of activityRows) activities[row.activity] = { measured: (activities[row.activity]?.measured || 0) + row.total_tokens, exact: null, unknown: 0 };
-      const totalEffort = { ...effort(total), operations: 80, providerTotalTokens: { measured: total, exact: null, unknown: 0 }, activities, cost: unavailableCost };
-      return { coverage: { ...coverage, state: 'partial', has_gaps: true }, totals: { total_tokens: total, model_requests: 40, tool_calls: 40, operations: 80, cost: unavailableCost }, activities: activityRows, time: {}, tools: {}, semantics: {}, outcomes: { schemaVersion: 1, coverage: 'partial', totals: totalEffort, attributed: effort(0), unattributed: { ...totalEffort, activities: {} }, unattributedReasons: { outcome_not_declared: 80 }, rows: [], totalRows: 0, nextCursor: null, kinds: { unattributed: totalEffort.providerTotalTokens }, basis: 'Measured repository activity is available; outcome attribution and costs remain unavailable.' } };
+      const unpricedTotal = { ...unavailableCost, model_requests: 40, unavailable_reasons: { rate_card_missing: 40 } };
+      const totalEffort = { ...effort(total), operations: 80, providerTotalTokens: { measured: total, exact: null, unknown: 0 }, activities, cost: unpricedTotal };
+      return { coverage: { ...coverage, state: 'partial', has_gaps: true }, totals: { total_tokens: total, model_requests: 40, tool_calls: 40, operations: 80, cost: unpricedTotal }, activities: activityRows, time: {}, tools: {}, semantics: {}, outcomes: { schemaVersion: 1, coverage: 'partial', totals: totalEffort, attributed: effort(0), unattributed: { ...totalEffort, activities: {} }, unattributedReasons: { outcome_not_declared: 80 }, rows: [], totalRows: 0, nextCursor: null, kinds: { unattributed: totalEffort.providerTotalTokens }, basis: 'Measured repository activity is available; outcome attribution and costs remain unavailable.' } };
     }
     const totals = effort(total); totals.activities = Object.fromEntries(activityRows.map(row => [row.activity, metric(row.total_tokens)]));
     return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: scenario.performanceRefreshPending ? { api_refresh_pending: 1 } : { mapping_unavailable: 1, query_budget_exhausted: 1 }, ...(scenario.performanceRefreshPending ? { snapshot: { refreshing: true, refresh_failed: false, updated_at_ms: null }, loading: scenario.performanceLoadingEstimate ? { state: 'reading', elapsed_ms: 90000, estimated_remaining_ms: 120000, estimate_samples: 4, estimate_basis: 'recent_comparable_source_reads' } : undefined } : {}) } : scenario.performancePublicationBacklog ? { ...coverage, sources: [{ source: 'usage-v2', contract_version: 1, format_version: 3, source_watermark: 'usage-v2:fixture:g1:w2', generated_at_ms: end, generation: 1, watermark: 2, journal_watermark: 99, watermark_at_ms: end, updated_at_ms: end, freshness: 'refreshing', pending_entries: 97, pending_corrections: 0, refresh_id: null, measured_execution_interval_sum_ms: null }], snapshot: { updated_at_ms: end, refreshing: true, refresh_failed: false, progress_completed: null, progress_total: null, progress_stage: null }, loading: null } : coverage,
@@ -42,6 +43,9 @@ export function performanceFixture(operation, params, scenario = {}) {
   if (operation === 'performance.overview') {
     const total = params.window_start_ms === 0 ? 32000000 : 6400000;
     const u = usage(total, !!params.outcome_cursor);
+    if (scenario.performanceHeadlinePending && params.totals_only && params.window_start_ms !== 0) {
+      u.coverage = { ...u.coverage, state: 'partial', loading: { state: 'reading', elapsed_ms: 0 }, snapshot: { refreshing: true, updated_at_ms: end, progress_stage: 'source_read' } };
+    }
     const estimate = params.totals_only ? { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', processing_tier: 'standard', estimated_usd_micros: null } : u.totals.cost || cost(total);
     return { repository_id: repo, window_start_ms: start, window_end_ms: end, generated_at_ms: end,
       total_tokens: u.outcomes.totals.providerTotalTokens,
@@ -85,9 +89,21 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
     const totals = document.querySelector('.performance-totals');
     if (!top || !heading || !totals) return null;
     const topStyle = getComputedStyle(top);
-    return { grid: topStyle.display === 'grid', headingTop: heading.getBoundingClientRect().top, totalsTop: totals.getBoundingClientRect().top };
+    const h = heading.getBoundingClientRect(), t = totals.getBoundingClientRect();
+    return { grid: topStyle.display === 'grid', sameRow: Math.min(h.bottom, t.bottom) > Math.max(h.top, t.top) };
   });
-  verify('wide header and totals share the same top edge', !topGeometry?.grid || Math.abs(topGeometry.headingTop - topGeometry.totalsTop) <= 1);
+  verify('wide header and totals share one compact band', !topGeometry?.grid || topGeometry.sameRow);
+  const actionIcons = await page.locator('.performance-action-icon').evaluateAll(async icons => Promise.all(icons.map(async icon => {
+    const mask = getComputedStyle(icon).maskImage;
+    const match = /url\(["']?([^"')]+)["']?\)/.exec(mask);
+    const label = icon.closest('button')?.getAttribute('aria-label');
+    if (!match || new URL(match[1], location.href).origin !== location.origin) return { label, mask, loaded: false };
+    const image = new Image();
+    image.src = match[1];
+    try { await image.decode(); return { label, mask, loaded: image.naturalWidth > 0 && image.naturalHeight > 0 }; }
+    catch { return { label, mask, loaded: false }; }
+  })));
+  verify('compact date and refresh actions have real icon assets', actionIcons.length === 2 && actionIcons.every(icon => icon.label && icon.loaded), JSON.stringify(actionIcons));
   verify('outcome token heading stays readable', await page.locator('.performance-outcome-table th').filter({ hasText: 'Total tokens' }).evaluate(element => {
     if (!element.getClientRects().length) return true;
     const probe = document.createElement('span');
@@ -134,6 +150,12 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   verify('publication backlog does not restart completed source reads', !daemon.calls.some(call => call.operation === 'performance.overview' && call.params.wait_for_refresh));
   verify('published measurements clear the read progress despite a publication backlog', await page.locator('[data-usage-loading]').isHidden() && (await page.locator('[data-performance-period-total]').innerText()).includes('6.4'));
+  verify('completed publication backlog does not claim the page is still updating', !/loading|updating/i.test(await page.locator('[data-performance-coverage]').innerText()));
+  daemon.setScenario({ ...scenario, performanceHeadlinePending: true });
+  await page.reload();
+  await page.locator('.performance-cost-matrix tbody tr').first().waitFor();
+  await page.waitForTimeout(1100);
+  verify('completed rich data retires superseded period-headline progress', await page.locator('[data-usage-loading]').isHidden());
   daemon.setScenario({ ...scenario, performanceHoldDetails: true });
   await page.reload();
   const headlinesReady = await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4') && document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'), null, { timeout: 5000 }).then(() => true, () => false);
@@ -222,7 +244,11 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   daemon.setScenario({ ...scenario, performanceDense: true });
   await page.locator('[data-performance-refresh]').click();
   await page.locator('.performance-cost-matrix tbody tr').nth(39).waitFor();
-  verify('large activity matrix keeps every measured row and unavailable costs', await page.locator('.performance-cost-matrix tbody tr').count() === 40 && (await page.locator('[data-performance-period-cost]').innerText()) === '—');
+  verify('large activity matrix keeps every measured row and explains missing prices', await page.locator('.performance-cost-matrix tbody tr').count() === 40 && (await page.locator('[data-performance-period-cost]').innerText()) === 'No matching rates');
+  verify('missing activity counts stay visibly unknown', (await page.locator('.performance-cost-matrix tbody tr td:nth-child(4)').allTextContents()).every(text => text === 'Not recorded'));
+  verify('activity cost status is labelled as cost data with an explicit reason', (await page.locator('.performance-cost-matrix th').allTextContents()).at(-1) === 'Cost data' && (await page.locator('.performance-cost-matrix tbody tr td:nth-child(5)').allTextContents()).every(text => text === 'No cost breakdown') && (await page.locator('[data-performance-cost-note]').textContent()) === 'Token counts are recorded; matching model prices are missing.');
+  const denseHeader = await page.locator('.performance-top').evaluate(node => ({ height: node.getBoundingClientRect().height, width: node.getBoundingClientRect().width }));
+  verify('unknown prices do not create a tall empty desktop header', denseHeader.width < 1000 || denseHeader.height <= 100, JSON.stringify(denseHeader));
   verify('same activity in different phases is distinguishable', (await page.locator('.performance-cost-matrix').innerText()).includes('Coding · Planning') && (await page.locator('.performance-cost-matrix').innerText()).includes('Coding · Implementation'));
   daemon.setScenario(scenario);
   await page.reload();
@@ -245,7 +271,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
     } else verify('group details omit unavailable component popovers', true);
   }
   verify('cost matrix shows API-equivalent estimates', await page.locator('.performance-cost-matrix').count() === 1 && (await page.locator('.performance-cost-matrix').innerText()).includes('API-equivalent USD'));
-  verify('activity request counts use measured requests and retain unavailable counts', await page.locator('.performance-cost-matrix tbody tr').first().locator('td').nth(3).textContent() === '3' && await page.locator('.performance-cost-matrix tbody tr').nth(2).locator('td').nth(3).textContent() === '—');
+  verify('activity request counts use measured requests and retain unavailable counts', await page.locator('.performance-cost-matrix tbody tr').first().locator('td').nth(3).textContent() === '3' && await page.locator('.performance-cost-matrix tbody tr').nth(2).locator('td').nth(3).textContent() === 'Not recorded');
   await page.locator('.performance-exact summary').first().click();
   verify('exact values can be read without color', (await page.locator('.performance-exact[open]').innerText()).includes('3,744,000'));
   await page.locator('.performance-exact summary').first().click();

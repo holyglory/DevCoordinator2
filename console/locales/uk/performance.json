@@ -118,5 +118,20 @@
   "reviewScopeTotal": "Усього за огляд: {tokens}",
   "periodScopeTotal": "Усього за період: {tokens}",
   "reviewTotalLabel": "Усього за огляд",
-  "periodTotalLabel": "Усього за період"
+  "periodTotalLabel": "Усього за період",
+  "summaryRecorded": "Записано",
+  "summaryPeriod": "Період",
+  "summaryReviews": "Оцінки",
+  "apiEquivalentCost": "Еквівалентна вартість за тарифами API",
+  "costData": "Дані про вартість",
+  "requests": "Запити",
+  "notRecorded": "Не записано",
+  "noCostBreakdown": "Немає розподілу вартості",
+  "noMatchingRates": "Немає відповідних тарифів",
+  "pricingUnavailable": "Ціни недоступні",
+  "pricesComplete": "Вартість розраховано",
+  "pricesPartial": "Деякі ціни відсутні",
+  "missingRatesNote": "Кількість токенів записано; відповідні ціни моделей відсутні.",
+  "missingBreakdownNote": "Кількість запитів і відомості про вартість за видами діяльності недоступні.",
+  "recordedData": "Записані дані"
 }

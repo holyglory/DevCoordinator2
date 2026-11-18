@@ -112,5 +112,20 @@
   "reviewScopeTotal": "მიმოხილვის ჯამი: {tokens}",
   "periodScopeTotal": "პერიოდის ჯამი: {tokens}",
   "reviewTotalLabel": "მიმოხილვის ჯამი",
-  "periodTotalLabel": "პერიოდის ჯამი"
+  "periodTotalLabel": "პერიოდის ჯამი",
+  "summaryRecorded": "ჩაწერილი",
+  "summaryPeriod": "პერიოდი",
+  "summaryReviews": "მიმოხილვები",
+  "apiEquivalentCost": "API-ის ფასებით ეკვივალენტური ღირებულება",
+  "costData": "ხარჯების მონაცემები",
+  "requests": "მოთხოვნები",
+  "notRecorded": "ჩაწერილი არ არის",
+  "noCostBreakdown": "ხარჯების განაწილება არ არის",
+  "noMatchingRates": "შესაბამისი ტარიფები არ არის",
+  "pricingUnavailable": "ფასების ინფორმაცია მიუწვდომელია",
+  "pricesComplete": "ფასი გამოთვლილია",
+  "pricesPartial": "ზოგიერთი ფასი აკლია",
+  "missingRatesNote": "ტოკენების რაოდენობა ჩაწერილია; მოდელების შესაბამისი ფასები აკლია.",
+  "missingBreakdownNote": "აქტივობების მიხედვით მოთხოვნების რაოდენობა და ხარჯების დეტალები მიუწვდომელია.",
+  "recordedData": "ჩაწერილი მონაცემები"
 }

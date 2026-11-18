@@ -115,5 +115,20 @@
   "reviewScopeTotal": "Vērtējuma kopskaits: {tokens}",
   "periodScopeTotal": "Perioda kopskaits: {tokens}",
   "reviewTotalLabel": "Kopā vērtējumā",
-  "periodTotalLabel": "Kopā periodā"
+  "periodTotalLabel": "Kopā periodā",
+  "summaryRecorded": "Reģistrēts",
+  "summaryPeriod": "Periods",
+  "summaryReviews": "Vērtējumi",
+  "apiEquivalentCost": "Līdzvērtīgas izmaksas pēc API cenām",
+  "costData": "Izmaksu dati",
+  "requests": "Pieprasījumi",
+  "notRecorded": "Nav reģistrēts",
+  "noCostBreakdown": "Nav izmaksu sadalījuma",
+  "noMatchingRates": "Nav atbilstošu tarifu",
+  "pricingUnavailable": "Cenas nav pieejamas",
+  "pricesComplete": "Izcenots",
+  "pricesPartial": "Trūkst dažu cenu",
+  "missingRatesNote": "Tokenu skaits ir reģistrēts; trūkst atbilstošo modeļu cenu.",
+  "missingBreakdownNote": "Pieprasījumu skaits un izmaksu informācija pa darbībām nav pieejama.",
+  "recordedData": "Reģistrētie dati"
 }

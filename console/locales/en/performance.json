@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Review total: {tokens}",
   "periodScopeTotal": "Period total: {tokens}",
   "reviewTotalLabel": "Total for review",
-  "periodTotalLabel": "Total for period"
+  "periodTotalLabel": "Total for period",
+  "summaryRecorded": "Recorded",
+  "summaryPeriod": "Period",
+  "summaryReviews": "Reviews",
+  "apiEquivalentCost": "API-equivalent cost",
+  "costData": "Cost data",
+  "requests": "Requests",
+  "notRecorded": "Not recorded",
+  "noCostBreakdown": "No cost breakdown",
+  "noMatchingRates": "No matching rates",
+  "pricingUnavailable": "Pricing unavailable",
+  "pricesComplete": "Priced",
+  "pricesPartial": "Some prices missing",
+  "missingRatesNote": "Token counts are recorded; matching model prices are missing.",
+  "missingBreakdownNote": "Per-activity request counts and cost details are not available.",
+  "recordedData": "Recorded data"
 }

@@ -115,5 +115,20 @@
   "reviewScopeTotal": "Total de la revue : {tokens}",
   "periodScopeTotal": "Total de la période : {tokens}",
   "reviewTotalLabel": "Total de la revue",
-  "periodTotalLabel": "Total de la période"
+  "periodTotalLabel": "Total de la période",
+  "summaryRecorded": "Enregistré",
+  "summaryPeriod": "Période",
+  "summaryReviews": "Revues",
+  "apiEquivalentCost": "Coût équivalent API",
+  "costData": "Données de coût",
+  "requests": "Requêtes",
+  "notRecorded": "Non enregistré",
+  "noCostBreakdown": "Aucune ventilation des coûts",
+  "noMatchingRates": "Aucun tarif correspondant",
+  "pricingUnavailable": "Tarifs indisponibles",
+  "pricesComplete": "Tarifé",
+  "pricesPartial": "Certains prix manquent",
+  "missingRatesNote": "Les nombres de jetons sont enregistrés ; les prix correspondants des modèles manquent.",
+  "missingBreakdownNote": "Les nombres de requêtes et les détails des coûts par activité ne sont pas disponibles.",
+  "recordedData": "Données enregistrées"
 }

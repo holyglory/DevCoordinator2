@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Totaal beoordeling: {tokens}",
   "periodScopeTotal": "Totaal periode: {tokens}",
   "reviewTotalLabel": "Totaal voor beoordeling",
-  "periodTotalLabel": "Totaal voor periode"
+  "periodTotalLabel": "Totaal voor periode",
+  "summaryRecorded": "Vastgelegd",
+  "summaryPeriod": "Periode",
+  "summaryReviews": "Beoordelingen",
+  "apiEquivalentCost": "Gelijkwaardige kosten tegen API-tarieven",
+  "costData": "Kostengegevens",
+  "requests": "Verzoeken",
+  "notRecorded": "Niet vastgelegd",
+  "noCostBreakdown": "Geen kostenuitsplitsing",
+  "noMatchingRates": "Geen overeenkomende tarieven",
+  "pricingUnavailable": "Prijsinformatie niet beschikbaar",
+  "pricesComplete": "Geprijsd",
+  "pricesPartial": "Sommige prijzen ontbreken",
+  "missingRatesNote": "De aantallen tokens zijn vastgelegd; de bijbehorende modelprijzen ontbreken.",
+  "missingBreakdownNote": "Aantallen verzoeken en kostendetails per activiteit zijn niet beschikbaar.",
+  "recordedData": "Vastgelegde gegevens"
 }

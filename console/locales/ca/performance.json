@@ -115,5 +115,20 @@
   "reviewScopeTotal": "Total de la revisió: {tokens}",
   "periodScopeTotal": "Total del període: {tokens}",
   "reviewTotalLabel": "Total de la revisió",
-  "periodTotalLabel": "Total del període"
+  "periodTotalLabel": "Total del període",
+  "summaryRecorded": "Registrat",
+  "summaryPeriod": "Període",
+  "summaryReviews": "Revisions",
+  "apiEquivalentCost": "Cost equivalent de l’API",
+  "costData": "Dades de costos",
+  "requests": "Sol·licituds",
+  "notRecorded": "No registrat",
+  "noCostBreakdown": "Sense desglossament de costos",
+  "noMatchingRates": "Sense tarifes coincidents",
+  "pricingUnavailable": "Preus no disponibles",
+  "pricesComplete": "Valorat",
+  "pricesPartial": "Falten alguns preus",
+  "missingRatesNote": "El nombre de tokens està registrat; falten els preus corresponents dels models.",
+  "missingBreakdownNote": "No estan disponibles el nombre de sol·licituds ni els detalls de costos per activitat.",
+  "recordedData": "Dades registrades"
 }

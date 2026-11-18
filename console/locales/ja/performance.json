@@ -112,5 +112,20 @@
   "reviewScopeTotal": "このレビューの合計トークン数：{tokens}",
   "periodScopeTotal": "この期間の合計トークン数：{tokens}",
   "reviewTotalLabel": "このレビューの合計",
-  "periodTotalLabel": "この期間の合計"
+  "periodTotalLabel": "この期間の合計",
+  "summaryRecorded": "記録済み",
+  "summaryPeriod": "期間",
+  "summaryReviews": "レビュー",
+  "apiEquivalentCost": "API料金換算コスト",
+  "costData": "コストデータ",
+  "requests": "リクエスト数",
+  "notRecorded": "未記録",
+  "noCostBreakdown": "コスト内訳なし",
+  "noMatchingRates": "一致する料金なし",
+  "pricingUnavailable": "料金情報を利用できません",
+  "pricesComplete": "料金適用済み",
+  "pricesPartial": "一部の価格がありません",
+  "missingRatesNote": "トークン数は記録されていますが、対応するモデルの価格がありません。",
+  "missingBreakdownNote": "アクティビティ別のリクエスト数とコストの詳細は利用できません。",
+  "recordedData": "記録済みデータ"
 }

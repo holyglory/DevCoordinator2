@@ -1898,11 +1898,16 @@ fn combine(
                     .filter(|((p, a, _), _)| p == &phase && a == &activity)
                     .map(|((_, _, provenance), count)| (provenance.clone(), *count))
                     .collect(),
-                cost: cost_from_buckets(
-                    activity_costs
-                        .get(&(phase.clone(), activity.clone()))
-                        .unwrap_or(&CostBuckets::default()),
-                ),
+                cost: activity_costs
+                    .get(&(phase.clone(), activity.clone()))
+                    .map(cost_from_buckets)
+                    .unwrap_or_else(|| UsageCost {
+                        status: "unavailable".into(),
+                        basis: "api_equivalent".into(),
+                        currency: "USD".into(),
+                        processing_tier: "standard".into(),
+                        ..Default::default()
+                    }),
             }
         })
         .collect::<Vec<_>>();

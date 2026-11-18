@@ -115,5 +115,20 @@
   "reviewScopeTotal": "Общо за прегледа: {tokens}",
   "periodScopeTotal": "Общо за периода: {tokens}",
   "reviewTotalLabel": "Общо за прегледа",
-  "periodTotalLabel": "Общо за периода"
+  "periodTotalLabel": "Общо за периода",
+  "summaryRecorded": "Записани",
+  "summaryPeriod": "Период",
+  "summaryReviews": "Прегледи",
+  "apiEquivalentCost": "Еквивалентен разход по API",
+  "costData": "Данни за разходите",
+  "requests": "Заявки",
+  "notRecorded": "Не е записано",
+  "noCostBreakdown": "Няма разбивка на разходите",
+  "noMatchingRates": "Няма съответстващи тарифи",
+  "pricingUnavailable": "Цените не са налични",
+  "pricesComplete": "Остойностено",
+  "pricesPartial": "Липсват някои цени",
+  "missingRatesNote": "Броят на токените е записан; липсват съответстващи цени за моделите.",
+  "missingBreakdownNote": "Броят на заявките и подробностите за разходите по дейности не са налични.",
+  "recordedData": "Записани данни"
 }

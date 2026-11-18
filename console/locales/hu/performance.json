@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Értékelés összesen: {tokens}",
   "periodScopeTotal": "Időszak összesen: {tokens}",
   "reviewTotalLabel": "Értékelés összesen",
-  "periodTotalLabel": "Időszak összesen"
+  "periodTotalLabel": "Időszak összesen",
+  "summaryRecorded": "Rögzített",
+  "summaryPeriod": "Időszak",
+  "summaryReviews": "Áttekintések",
+  "apiEquivalentCost": "API-árak szerinti költség",
+  "costData": "Költségadatok",
+  "requests": "Kérések",
+  "notRecorded": "Nincs rögzítve",
+  "noCostBreakdown": "Nincs költségbontás",
+  "noMatchingRates": "Nincsenek megfelelő díjak",
+  "pricingUnavailable": "Az árak nem érhetők el",
+  "pricesComplete": "Beárazva",
+  "pricesPartial": "Néhány ár hiányzik",
+  "missingRatesNote": "A tokenszámok rögzítve vannak; a megfelelő modellárak hiányoznak.",
+  "missingBreakdownNote": "A tevékenységenkénti kérésszámok és költségrészletek nem érhetők el.",
+  "recordedData": "Rögzített adatok"
 }

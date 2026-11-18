@@ -115,5 +115,20 @@
   "reviewScopeTotal": "Վերանայման ընդհանուր քանակը՝ {tokens}",
   "periodScopeTotal": "Ժամանակահատվածի ընդհանուր քանակը՝ {tokens}",
   "reviewTotalLabel": "Վերանայման ընդհանուր քանակը",
-  "periodTotalLabel": "Ժամանակահատվածի ընդհանուր քանակը"
+  "periodTotalLabel": "Ժամանակահատվածի ընդհանուր քանակը",
+  "summaryRecorded": "Գրանցված",
+  "summaryPeriod": "Ժամանակահատված",
+  "summaryReviews": "Վերանայումներ",
+  "apiEquivalentCost": "API-ի գներին համարժեք արժեք",
+  "costData": "Ծախսերի տվյալներ",
+  "requests": "Հարցումներ",
+  "notRecorded": "Գրանցված չէ",
+  "noCostBreakdown": "Ծախսերի բաշխումը հասանելի չէ",
+  "noMatchingRates": "Համապատասխան սակագներ չկան",
+  "pricingUnavailable": "Գների տվյալները հասանելի չեն",
+  "pricesComplete": "Գնահատված",
+  "pricesPartial": "Որոշ գներ բացակայում են",
+  "missingRatesNote": "Token-ների քանակները գրանցված են․ մոդելների համապատասխան գները բացակայում են։",
+  "missingBreakdownNote": "Ըստ գործողության՝ հարցումների քանակները և ծախսերի մանրամասները հասանելի չեն։",
+  "recordedData": "Գրանցված տվյալներ"
 }

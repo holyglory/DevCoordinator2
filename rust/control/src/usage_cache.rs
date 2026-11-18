@@ -224,10 +224,13 @@ impl UsageCache {
         });
         if let Some(entry) = state.entries.get_mut(key) {
             let pending = result.as_ref().is_ok_and(|report| {
+                // Successful stale reads retain measurements and report their
+                // pending source refresh as an event instead of a failure.
                 report
                     .coverage
                     .unavailable_reasons
                     .keys()
+                    .chain(report.coverage.events.keys())
                     .any(|reason| super::collector_api::is_pending(reason))
             });
             let usable = room
@@ -552,6 +555,66 @@ mod tests {
         let completed = cache.get("key".into(), report(None), || panic!("fresh result"));
         assert_eq!(completed.totals.total_tokens, Some(200));
         assert_eq!(completed.coverage.loading, None);
+
+        cache.get_window("saved-pending".into(), 100, report(None), move |cutoff| {
+            assert_eq!(cutoff, 100);
+            let mut pending = report(Some(100));
+            pending.coverage.configured_collectors = 1;
+            pending.coverage.available_collectors = 1;
+            pending
+                .coverage
+                .events
+                .insert("api_snapshot_stale".into(), 1);
+            pending
+                .coverage
+                .events
+                .insert("api_refresh_pending".into(), 1);
+            pending.coverage.loading = Some(loading(100));
+            pending.coverage.snapshot = Some(UsageSnapshot {
+                updated_at_ms: Some(90),
+                refreshing: true,
+                refresh_failed: false,
+                progress_completed: None,
+                progress_total: None,
+                progress_stage: Some("source_read".into()),
+            });
+            Ok(pending)
+        });
+        cache.wait(None);
+        let saved = cache.get_window("saved-pending".into(), 200, report(None), |cutoff| {
+            assert_eq!(
+                cutoff, 100,
+                "successful stale reads retain their pending source cutoff"
+            );
+            let mut published = report(Some(200));
+            published.coverage.configured_collectors = 1;
+            published.coverage.available_collectors = 1;
+            published.coverage.snapshot = Some(UsageSnapshot {
+                updated_at_ms: Some(95),
+                refreshing: true,
+                refresh_failed: false,
+                progress_completed: None,
+                progress_total: None,
+                progress_stage: None,
+            });
+            Ok(published)
+        });
+        assert_eq!(saved.totals.total_tokens, Some(100));
+        assert!(saved.coverage.loading.is_some());
+        cache.wait(None);
+        let completed = cache.get_window("saved-pending".into(), 200, report(None), |_| {
+            panic!("publication backlog must not start another source read")
+        });
+        assert_eq!(
+            completed.totals.total_tokens,
+            Some(200),
+            "successful stale results must not hide completed source measurements"
+        );
+        assert_eq!(completed.coverage.loading, None);
+        let snapshot = completed.coverage.snapshot.unwrap();
+        assert!(snapshot.refreshing, "publication backlog remains explicit");
+        assert!(!snapshot.refresh_failed);
+        assert_eq!(snapshot.progress_stage, None);
     }
 
     #[test]

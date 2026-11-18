@@ -1097,7 +1097,7 @@ async function main() {
 
   if (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY || process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY || process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY || process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
     try {
-      const translatedViewports = process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [...(process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? [{ width: 1001, height: 900 }] : []), { width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
+      const translatedViewports = process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [...(process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? [{ width: 1810, height: 1226 }, { width: 1523, height: 1033 }, { width: 1001, height: 900 }] : []), { width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
       for (const viewport of translatedViewports) {
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
@@ -1241,10 +1241,10 @@ async function main() {
             const navigationStarted = Date.now();
             const waitRequest = failed || cacheState === 'publication' ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v3/' + name)) && request.postDataJSON()?.wait_for_refresh === true).then(request => ({ request, elapsed_ms: Date.now() - navigationStarted })).catch(error => ({ error }));
             await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
-            await page.waitForFunction(() => /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache|Saved usage|Refresh failed/i.test(document.querySelector('main').innerText));
+            await page.waitForFunction(() => /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache|Saved usage|Usage snapshot|Refresh failed/i.test(document.querySelector('main').innerText));
             const before = await page.locator('main').innerText();
             const renderedOperation = page.url().includes('#/usage/') ? 'usage.repository' : operation;
-            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage/i.test(before));
+            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading (token )?usage|Rebuilding usage cache|Indexing usage cache/.test(before) : failed ? /refresh failed/i.test(before) : cacheState === 'publication' ? /Usage snapshot/i.test(before) && !/Updating saved usage|Saved usage · updating/i.test(before) : /saved usage/i.test(before));
             if (cacheState === 'unavailable' && route === 'usage/' + REPO) check('empty usage failure is shown once', (before.match(/refresh failed/gi) || []).length === 1 && await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail hides unmeasured metrics', await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail shows rebuild progress', await page.locator('.usage-rebuild-progress').count() === 1 && /3,426/.test(await page.locator('.usage-rebuild-progress').innerText()));
@@ -1276,6 +1276,7 @@ async function main() {
               await page.clock.fastForward(15000);
               await waitForRenderFrame(page);
               check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': publication backlog does not repeat completed reads', continuations() === (cacheState === 'publication_refresh' ? 1 : 0));
+              check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': settled publication does not retain page-read status', !/Updating saved usage|Saved usage · updating|Loading token usage/i.test(await page.locator('main').innerText()) && await page.locator('.usage-coverage-indicator.indexing').count() === 0);
               if (renderedOperation === 'progress.repository') check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': completed reads retain measured token evidence', /\d/.test(await page.locator('[data-progress-evidence="tokens"] > strong').innerText()));
               else check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': completed reads clear inline progress', await page.locator('[data-usage-loading]').isHidden());
             }
@@ -1283,6 +1284,7 @@ async function main() {
             await page.screenshot({ path: path.join(OUT, viewport.width + '-' + route.replaceAll('/', '-') + '-' + cacheState + '-initial.png') });
             await page.screenshot({ path: path.join(OUT, viewport.width + '-' + route.replaceAll('/', '-') + '-' + cacheState + '-full.png'), fullPage: true });
             } catch (error) {
+              await fs.writeFile(path.join(OUT, `cache-failure-${viewport.width}-${route.replaceAll('/', '-')}-${cacheState}.json`), JSON.stringify({ url: page.url(), text: await page.locator('main').innerText(), calls: daemon.calls.slice(-15).map(call => ({ operation: call.operation, params: call.params })) }, null, 2));
               check('cache ' + viewport.width + ' ' + route + ' ' + cacheState, false, error.message + ' usage cards: ' + (await page.locator('[data-summary="usage"]').allTextContents()).join(' | ').slice(0, 600));
               daemon.releaseDelayed();
             }

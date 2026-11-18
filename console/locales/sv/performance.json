@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Granskning totalt: {tokens}",
   "periodScopeTotal": "Period totalt: {tokens}",
   "reviewTotalLabel": "Totalt för granskning",
-  "periodTotalLabel": "Totalt för period"
+  "periodTotalLabel": "Totalt för period",
+  "summaryRecorded": "Registrerat",
+  "summaryPeriod": "Period",
+  "summaryReviews": "Granskningar",
+  "apiEquivalentCost": "Motsvarande kostnad enligt API-priser",
+  "costData": "Kostnadsdata",
+  "requests": "Förfrågningar",
+  "notRecorded": "Inte registrerat",
+  "noCostBreakdown": "Ingen kostnadsfördelning",
+  "noMatchingRates": "Inga matchande priser",
+  "pricingUnavailable": "Priser är inte tillgängliga",
+  "pricesComplete": "Prissatt",
+  "pricesPartial": "Vissa priser saknas",
+  "missingRatesNote": "Antalet token är registrerat; motsvarande modellpriser saknas.",
+  "missingBreakdownNote": "Antal förfrågningar och kostnadsdetaljer per aktivitet är inte tillgängliga.",
+  "recordedData": "Registrerade data"
 }

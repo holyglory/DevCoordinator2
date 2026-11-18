@@ -115,5 +115,20 @@
   "reviewScopeTotal": "Baxış cəmi: {tokens}",
   "periodScopeTotal": "Dövr cəmi: {tokens}",
   "reviewTotalLabel": "Baxış üzrə cəm",
-  "periodTotalLabel": "Dövr üzrə cəm"
+  "periodTotalLabel": "Dövr üzrə cəm",
+  "summaryRecorded": "Qeydə alınmış",
+  "summaryPeriod": "Dövr",
+  "summaryReviews": "Baxışlar",
+  "apiEquivalentCost": "API qiymətlərinə ekvivalent xərc",
+  "costData": "Xərc məlumatları",
+  "requests": "Sorğular",
+  "notRecorded": "Qeydə alınmayıb",
+  "noCostBreakdown": "Xərc bölgüsü yoxdur",
+  "noMatchingRates": "Uyğun tariflər yoxdur",
+  "pricingUnavailable": "Qiymət məlumatı əlçatan deyil",
+  "pricesComplete": "Qiymətləndirilib",
+  "pricesPartial": "Bəzi qiymətlər çatışmır",
+  "missingRatesNote": "Token sayları qeydə alınıb; uyğun model qiymətləri yoxdur.",
+  "missingBreakdownNote": "Hər fəaliyyət üzrə sorğu sayları və xərc təfərrüatları əlçatan deyil.",
+  "recordedData": "Qeydə alınmış məlumatlar"
 }
