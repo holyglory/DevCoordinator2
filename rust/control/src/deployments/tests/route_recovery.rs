@@ -1500,7 +1500,45 @@ fn healthy_process_without_its_route_is_not_ready() {
 
 #[test]
 fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
-    let fixture = RouteWorld::new("checkout");
+    struct HttpHealth {
+        ready: Arc<AtomicBool>,
+    }
+    impl DeploymentHealth for HttpHealth {
+        fn http_ready(
+            &self,
+            _port: u16,
+            _path: &str,
+            _timeout: Duration,
+            _terminal: &(dyn Fn() -> Option<String> + Sync),
+        ) -> Readiness {
+            if self.ready.load(Ordering::SeqCst) {
+                Readiness::ready("http 204")
+            } else {
+                Readiness::failed("HTTP listener is not ready")
+            }
+        }
+        fn tcp_ready(
+            &self,
+            host: &str,
+            port: u16,
+            timeout: Duration,
+            terminal: &(dyn Fn() -> Option<String> + Sync),
+        ) -> Readiness {
+            FixtureHealth.tcp_ready(host, port, timeout, terminal)
+        }
+    }
+    let mut fixture = RouteWorld::new("checkout");
+    let http_ready = Arc::new(AtomicBool::new(true));
+    fixture.deployments.health = Arc::new(HttpHealth {
+        ready: http_ready.clone(),
+    });
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let specification = std::fs::read_to_string(&declaration).unwrap();
+    std::fs::write(
+        &declaration,
+        format!("{specification}\nhealth={{path=\"/healthz\",timeout_seconds=30}}\n"),
+    )
+    .unwrap();
     let first = fixture.apply().unwrap();
     let starts_before_reconcile = fixture
         .systemd
@@ -1525,6 +1563,101 @@ fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
     );
     let initial = fixture.route();
     let unit = first.components[0].binding.identity.clone().unwrap();
+
+    // Preserve the previously published route, just as a daemon restart does.
+    // One status captures the old healthy row before recovery; both it and a
+    // fresh ready-wait then observe the restarted unit before fresh HTTP proof.
+    fixture.systemd.states.lock().unwrap().remove(&unit);
+    http_ready.store(false, Ordering::SeqCst);
+    let (status_entered, status_reading) = std::sync::mpsc::channel();
+    let (release_status, status_released) = std::sync::mpsc::channel();
+    *fixture.systemd.state_hook.lock().unwrap() = Some(Box::new(move || {
+        status_entered.send(()).unwrap();
+        status_released
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+    }));
+    let status_service = fixture.deployments.clone();
+    let status_caller = fixture.caller.clone();
+    let id = first.deployment_id.clone();
+    let stale_status =
+        std::thread::spawn(move || status_service.status(None, None, Some(&id), &status_caller));
+    status_reading.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (start_entered, starting) = std::sync::mpsc::channel();
+    let (release_start, start_released) = std::sync::mpsc::channel();
+    *fixture.systemd.start_hook.lock().unwrap() = Some(Box::new(move || {
+        start_entered.send(()).unwrap();
+        start_released.recv_timeout(Duration::from_secs(5)).unwrap();
+    }));
+    let service = fixture.deployments.clone();
+    let recovery = std::thread::spawn(move || service.reconcile_routes());
+    starting.recv_timeout(Duration::from_secs(5)).unwrap();
+    release_status.send(()).unwrap();
+    let stale_status = stale_status.join().unwrap().unwrap();
+    let starting_status = fixture.status(&first.deployment_id);
+    let starting_route = fixture.route();
+    let events = crate::events::EventService::new(fixture.world.database.clone()).unwrap();
+    let mut ready_wait = wait::prepare(
+        &fixture,
+        &first.deployment_id,
+        devcoordinator2_api::params::DeploymentWaitState::Ready,
+        &events,
+    );
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let first_poll = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(ready_wait.as_mut().poll(context))
+            })
+            .await;
+            release_start.send(()).unwrap();
+            recovery.join().unwrap().unwrap();
+            let failed_proof_status = fixture.status(&first.deployment_id);
+            let failed_proof_route = fixture.route();
+            http_ready.store(true, Ordering::SeqCst);
+            fixture.deployments.reconcile_routes().unwrap();
+            let (completed_before_health, recovered) = match first_poll {
+                std::task::Poll::Ready(result) => (true, result.unwrap()),
+                std::task::Poll::Pending => (false, ready_wait.await.unwrap()),
+            };
+            assert!(
+                !stale_status.readiness.unwrap().ready,
+                "an old healthy row cannot make the new process ready before its HTTP proof"
+            );
+            assert!(
+                !starting_status.readiness.unwrap().ready,
+                "the saved route must remain unavailable while recovery checks HTTP health"
+            );
+            assert_eq!(starting_status.route_port, None);
+            assert_eq!(
+                starting_status.components[0].lease_id, first.components[0].lease_id,
+                "pending recovery must keep the original stable port allocation"
+            );
+            assert_eq!(starting_status.current_generation, first.current_generation);
+            assert_eq!(starting_status.components[0].health, "unknown");
+            assert_eq!(starting_route["routes"], serde_json::json!([]));
+            assert!(
+                !completed_before_health,
+                "deployment.wait completed before recovery proved HTTP health"
+            );
+            assert!(
+                !failed_proof_status.readiness.unwrap().ready,
+                "failed HTTP proof must leave recovery unavailable and retryable"
+            );
+            assert_eq!(failed_proof_route["routes"], serde_json::json!([]));
+            assert_eq!(recovered["status"]["readiness"]["ready"], true);
+            assert_eq!(
+                recovered["status"]["route_port"],
+                serde_json::json!(first.route_port)
+            );
+        });
+    assert_eq!(
+        fixture.route()["routes"][0]["lease_id"],
+        initial["routes"][0]["lease_id"]
+    );
+
     fixture.systemd.states.lock().unwrap().remove(&unit);
     fixture
         .world

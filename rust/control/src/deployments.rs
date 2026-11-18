@@ -5896,6 +5896,8 @@ mod tests {
         activation_polls: std::sync::atomic::AtomicUsize,
         build_exit: std::sync::atomic::AtomicI32,
         listener_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        start_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        state_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         reject_running_starts: std::sync::atomic::AtomicBool,
     }
 
@@ -5907,6 +5909,8 @@ mod tests {
                 activation_polls: std::sync::atomic::AtomicUsize::new(0),
                 build_exit: std::sync::atomic::AtomicI32::new(0),
                 listener_hook: Mutex::new(None),
+                start_hook: Mutex::new(None),
+                state_hook: Mutex::new(None),
                 reject_running_starts: std::sync::atomic::AtomicBool::new(false),
             }
         }
@@ -5964,11 +5968,19 @@ mod tests {
                 }
                 .into(),
             );
+            let hook = self.start_hook.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
             std::fs::write(&specification.log_path, "process output\n")
                 .map_err(|error| SystemdError::Operation(error.to_string()))
         }
 
         fn process_state(&self, unit: &str) -> Result<ProcessState, SystemdError> {
+            let hook = self.state_hook.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
             if self
                 .states
                 .lock()
