@@ -93,6 +93,17 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
     return { grid: topStyle.display === 'grid', sameRow: Math.min(h.bottom, t.bottom) > Math.max(h.top, t.top) };
   });
   verify('wide header and totals share one compact band', !topGeometry?.grid || topGeometry.sameRow);
+  const actionIcons = await page.locator('.performance-action-icon').evaluateAll(async icons => Promise.all(icons.map(async icon => {
+    const mask = getComputedStyle(icon).maskImage;
+    const match = /url\(["']?([^"')]+)["']?\)/.exec(mask);
+    const label = icon.closest('button')?.getAttribute('aria-label');
+    if (!match || new URL(match[1], location.href).origin !== location.origin) return { label, mask, loaded: false };
+    const image = new Image();
+    image.src = match[1];
+    try { await image.decode(); return { label, mask, loaded: image.naturalWidth > 0 && image.naturalHeight > 0 }; }
+    catch { return { label, mask, loaded: false }; }
+  })));
+  verify('compact date and refresh actions have real icon assets', actionIcons.length === 2 && actionIcons.every(icon => icon.label && icon.loaded), JSON.stringify(actionIcons));
   verify('outcome token heading stays readable', await page.locator('.performance-outcome-table th').filter({ hasText: 'Total tokens' }).evaluate(element => {
     if (!element.getClientRects().length) return true;
     const probe = document.createElement('span');
