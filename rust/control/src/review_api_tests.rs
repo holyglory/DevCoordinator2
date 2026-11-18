@@ -136,6 +136,11 @@ fn performance_cost_components_accept_scalar_null_and_measured_transport_values(
                 cost[key] = wire_remainder.clone();
             }
             cost["unknownObservations"] = json!(unknown);
+            cost["reasoningUsdMicros"] = if status == "complete" {
+                json!({"measured":0,"exact":0,"unknown":0})
+            } else {
+                json!({"measured":0,"exact":null,"unknown":unknown})
+            };
             cost["pricedObservations"] = json!(if expected.is_none() { 0 } else { 2 - unknown });
             cost["rateCardRefs"] = if expected.is_some() {
                 json!(["fixture-standard"])
