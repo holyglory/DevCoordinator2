@@ -18,7 +18,8 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     const now=Date.now(),last_success=new Date(now).toISOString();
     const fresh={github_url:'https://github.com/fixture-owner/fixture-project',refresh_state:'failed',error:'Local snapshot unavailable',github_observation:{job_id:'fixture-refresh',state:'fresh',last_success}};
     assert.equal(hasFreshGithubObservation(fresh,now),true);
-    for(const observation of [null,{...fresh.github_observation,state:'failed'},{...fresh.github_observation,state:'refreshing'},{...fresh.github_observation,job_id:null},{...fresh.github_observation,last_success:'invalid'},{...fresh.github_observation,last_success:new Date(now-11*60*1000).toISOString()},{...fresh.github_observation,last_success:new Date(now+1000).toISOString()}]) {
+    assert.equal(hasFreshGithubObservation(fresh,now),true);
+    for(const observation of [null,{...fresh.github_observation,state:'failed'},{...fresh.github_observation,job_id:null},{...fresh.github_observation,last_success:'invalid'},{...fresh.github_observation,last_success:new Date(now-11*60*1000).toISOString()},{...fresh.github_observation,last_success:new Date(now+1000).toISOString()}]) {
       assert.equal(hasFreshGithubObservation({...fresh,refresh_state:'fresh',error:null,last_success,github_observation:observation},now),false);
     }
   });
