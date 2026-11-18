@@ -602,7 +602,7 @@ async function startFakeDaemon(dir) {
         && !scenario.delayExceptOperations?.includes(req.operation)) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
       if (cmd === 'project.context' && scenario.projectContextFixture) {
-        if (scenario.projectContextDelayMs) await new Promise((resolve) => setTimeout(resolve, scenario.projectContextDelayMs));
+        if (scenario.projectContextHold && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
         const repositoryIds = Array.isArray(req.params.repository_ids) ? req.params.repository_ids : [];
         if (repositoryIds.includes(scenario.projectContextErrorRepository)) return reply({ ok: false, error: { code: 'internal_error', message: 'Fixture project membership unavailable', detail: '' } });
         return reply({ ok: true, data: {

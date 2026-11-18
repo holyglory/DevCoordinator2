@@ -93,13 +93,12 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
       });
       observer.observe(document, { childList: true, subtree: true, characterData: true });
     });
-    await isolateScenario(page, daemon, { ...scenario, workspacePaging: true, projectContextFixture: true, projectContextPagingFixture: true, projectContextDelayMs: 2000 });
+    await isolateScenario(page, daemon, { ...scenario, workspacePaging: true, projectContextFixture: true, projectContextPagingFixture: true, projectContextHold: true });
     const startedAt = Date.now();
     const projectContextResponsePromise = page.waitForResponse((response) => response.url().endsWith('/project.context') && !response.request().postData().includes('r-later'), { timeout: 12000 });
     const laterContextResponsePromise = page.waitForResponse((response) => response.url().endsWith('/project.context') && response.request().postData().includes('r-later'), { timeout: 12000 });
     await page.goto(baseUrl + '#/performance/' + repositoryId);
     await page.waitForRequest((request) => request.url().endsWith('/project.context'), { timeout: 8000 });
-    const releaseTimer = setTimeout(() => daemon.releaseDelayed(), 2000);
     await page.waitForSelector('[data-performance-page]', { timeout: 12000 }).catch(() => {});
     await page.waitForFunction(() => /^\s*(?:≥\s*)?\d/.test(document.querySelector('[data-performance-period-total]')?.textContent || ''), null, { timeout: 12000 }).catch(() => {});
     const periodButton = page.locator('[data-performance-period-total] .performance-token-detail-button');
@@ -111,10 +110,9 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
       return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight };
     });
     const popoverBefore = await popoverBox();
+    daemon.releaseDelayed();
     const projectContextResponse = await projectContextResponsePromise.catch(() => null);
     const laterContextResponse = await laterContextResponsePromise.catch(() => null);
-    clearTimeout(releaseTimer);
-    daemon.releaseDelayed();
     await page.waitForSelector('[data-performance-page]', { timeout: 5000 }).catch(() => {});
     await page.waitForFunction(() => document.querySelector('#workspace-heading')?.textContent?.includes('Console test project'), null, { timeout: 5000 }).catch(() => {});
     const popoverAfter = await popoverBox();

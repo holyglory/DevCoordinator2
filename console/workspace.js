@@ -387,7 +387,7 @@ window.DevCoordinatorWorkspace = (() => {
         if (active) paint();
       }).catch((error) => {
         if (signal.aborted || data !== snapshot || error.code === 'stale') return;
-        snapshot.catalogueFailed = true;
+        snapshot.projectContextFailed = true;
         onError(error);
       });
     }
@@ -420,7 +420,13 @@ window.DevCoordinatorWorkspace = (() => {
             for (const row of page.headers) plans.set(row.repository_id, row);
             snapshot.plans = [...plans.values()]; snapshot.nextPlans = page.next_repository_id;
           }
-          await loadProjectContext(signal);
+          try {
+            await loadProjectContext(signal);
+          } catch (error) {
+            if (signal.aborted || data !== snapshot || error.code === 'stale') return;
+            snapshot.projectContextFailed = true;
+            window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => window.DevCoordinatorI18n.t('shell.value1_repositories_unavailable_refresh_to_retry_426a76', { value1: window.DevCoordinatorI18n.t('common.projects_04e2a9') }));
+          }
           rebuildCatalogue();
           if (active) paintNavigation();
         }
