@@ -1245,7 +1245,7 @@ fn next_cursor(
                 .ok_or(GithubError::InvalidResponse)?;
             let target = Url::parse(address).map_err(|_| GithubError::InvalidResponse)?;
             if target.origin() != current.origin()
-                || target.path() != current.path()
+                || !pagination_path_matches(current.path(), target.path())
                 || !target.username().is_empty()
                 || target.password().is_some()
                 || target.fragment().is_some()
@@ -1313,6 +1313,29 @@ fn next_cursor(
         next = Some((page + 1).to_string());
     }
     Ok(next)
+}
+
+fn pagination_path_matches(current: &str, target: &str) -> bool {
+    if current == target {
+        return true;
+    }
+    // GitHub's Link header uses the canonical numeric repository route.
+    // Accept only the same collection; the link supplies a page number,
+    // never a request URL. Requests continue through configured owner/name.
+    let Some(current) = current.strip_prefix("/repos/") else {
+        return false;
+    };
+    let Some(target) = target.strip_prefix("/repositories/") else {
+        return false;
+    };
+    let current = current.split('/').collect::<Vec<_>>();
+    let target = target.split('/').collect::<Vec<_>>();
+    matches!(current.as_slice(), [_, _, "branches" | "commits" | "pulls"])
+        && target.len() == 2
+        && target[1] == current[2]
+        && !target[0].is_empty()
+        && target[0].bytes().all(|byte| byte.is_ascii_digit())
+        && target[0].parse::<u64>().is_ok_and(|id| id > 0)
 }
 
 fn page_result<T>(items: Vec<T>, next_cursor: Option<String>) -> GithubPage<T> {
@@ -1556,4 +1579,4 @@ fn timestamp() -> String {
 
 #[cfg(test)]
 #[path = "github/tests.rs"]
-mod tests;
+pub(super) mod tests;

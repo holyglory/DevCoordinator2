@@ -7,6 +7,17 @@ refresh even when the cache is fresh; a refresh failure preserves previously
 observed branches and reports the coverage gap. A failed or inaccessible remote
 request is never evidence that a ref was removed.
 
+`Repository.github_observation` identifies the latest remote-refresh job and
+whether its complete GitHub branch list is `fresh`, `refreshing` or `failed`.
+Its `last_success` is the last complete list for the currently configured GitHub
+repository. A failed later request keeps that timestamp and cached branches but
+reports `failed`; an incomplete page scan never creates a successful receipt.
+Local-copy inspection and pull-request proof failures remain in the combined
+source status without invalidating a complete branch-list observation. These
+receipts live in the existing durable refresh-job records. The live Console
+handoff check requires a fresh receipt from the preceding ten minutes and
+retains its job ID with the verification evidence.
+
 ## Private credential
 
 Construct the client with `Config::secrets_dir().join("github.token")`. The owner
@@ -57,7 +68,11 @@ page. The caller must retain all earlier pages and preserve concurrent-change
 and scan-budget limits. An exactly full page without Link metadata remains
 partial until the following page establishes the end. Pagination links must
 retain the same origin, path and query, except for advancing one page; links are
-validated and never followed directly.
+validated and never followed directly. GitHub's canonical numeric
+`/repositories/<id>/branches`, `/commits` and `/pulls` pagination aliases are
+accepted only for the same collection and unchanged non-page query. They supply
+only the bounded page cursor; every request still uses the configured
+owner/name route.
 
 Every HTTP request has a 4-second connection deadline and 12-second total
 deadline; merge verification has a 60-second outer deadline. Response bodies

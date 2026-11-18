@@ -87,17 +87,29 @@ fn configure(
         .unwrap()
 }
 fn drain(service: &ProjectService, project: &str, key: &str) {
+    let result = drain_refresh(service, project, key);
+    assert_eq!(result.state, "succeeded", "{result:?}");
+}
+fn drain_refresh(service: &ProjectService, project: &str, key: &str) -> api::Job {
+    drain_refresh_kind(service, project, key, false)
+}
+fn drain_refresh_kind(
+    service: &ProjectService,
+    project: &str,
+    key: &str,
+    include_remote: bool,
+) -> api::Job {
     let job = service
         .refresh(
             api::Refresh {
                 project_id: project.into(),
                 idempotency_key: key.into(),
-                include_remote: false,
+                include_remote,
             },
             &caller(),
         )
         .unwrap();
-    for _ in 0..80 {
+    for _ in 0..512 {
         let mut budget = Budget::new(Duration::from_secs(10), 256, 1024 * 1024);
         let step = service.refresh_step(&mut budget);
         assert!(
@@ -114,8 +126,7 @@ fn drain(service: &ProjectService, project: &str, key: &str) {
             )
             .unwrap();
         if matches!(result.state.as_str(), "succeeded" | "failed" | "partial") {
-            assert_eq!(result.state, "succeeded", "{:?}", result);
-            return;
+            return result;
         }
     }
     panic!("refresh did not finish its bounded fixture inventory");
@@ -133,6 +144,19 @@ fn page(id: &str, limit: u16) -> api::Page {
         query: None,
         lifecycle: None,
     }
+}
+fn all_branches(service: &ProjectService, project: &str) -> Vec<api::Branch> {
+    let mut request = page(project, 100);
+    let mut branches = Vec::new();
+    for _ in 0..50 {
+        let result = service.branches(request.clone(), &caller()).unwrap();
+        branches.extend(result.branches);
+        request.cursor = result.next_cursor;
+        if request.cursor.is_none() {
+            return branches;
+        }
+    }
+    panic!("branch fixture pagination exceeded its bound");
 }
 
 #[test]
@@ -307,6 +331,112 @@ fn persistent_products_group_explicit_sources_and_clones_and_preserve_missing_in
         )
         .unwrap();
     assert_eq!(context.memberships[0].source_repository_id, "project-alpha");
+    // A deployment snapshot can appear in the same Git worktree inventory
+    // while remaining unreadable to this source's registered owner. Retain
+    // that copy as unavailable without losing readable branches or intent.
+    let unavailable = fixture._temporary.path().join("unavailable-snapshot");
+    git(
+        &fixture.repository,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "snapshot",
+            unavailable.to_str().unwrap(),
+        ],
+    );
+    git(&fixture.repository, &["branch", "new-readable-branch"]);
+    assert!(
+        git(
+            &fixture.repository,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"]
+        )
+        .contains("new-readable-branch")
+    );
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = fs::metadata(&unavailable).unwrap().permissions();
+    fs::set_permissions(&unavailable, fs::Permissions::from_mode(0o0)).unwrap();
+    let unavailable_job = drain_refresh(&service, &status.project.project_id, "unavailable-copy");
+    fs::set_permissions(&unavailable, permissions).unwrap();
+    assert_eq!(unavailable_job.state, "partial");
+    let partial = service
+        .status(reference(&status.project.project_id), &caller())
+        .unwrap();
+    assert!(
+        partial
+            .branches
+            .iter()
+            .any(|b| b.branch_name == "new-readable-branch")
+    );
+    assert_eq!(
+        partial
+            .branches
+            .iter()
+            .find(|b| b.branch_id == edited.branch_id)
+            .unwrap()
+            .intent
+            .as_deref(),
+        Some("Finish user workflow")
+    );
+    let unavailable_copy = partial
+        .checkouts
+        .iter()
+        .find(|c| c.absolute_path.as_deref() == unavailable.to_str())
+        .unwrap();
+    assert_eq!(unavailable_copy.registration_state, "unregistered");
+    assert_eq!(unavailable_copy.dirty, None);
+    assert_eq!(unavailable_copy.local_bytes, None);
+    assert!(partial.storage.unmeasured_count > 0);
+    let healthy = partial
+        .repositories
+        .iter()
+        .find(|s| s.repository_id == "source-second")
+        .unwrap();
+    assert!(healthy.error.is_none());
+    assert!(healthy.last_success.is_some());
+    let incomplete = partial
+        .repositories
+        .iter()
+        .find(|s| s.repository_id == "project-alpha")
+        .unwrap();
+    assert!(incomplete.error.is_some());
+    assert_eq!(
+        incomplete.last_success,
+        status
+            .repositories
+            .iter()
+            .find(|s| s.repository_id == "project-alpha")
+            .unwrap()
+            .last_success
+    );
+    assert!(!unavailable_copy.can_remove);
+    assert!(
+        unavailable_copy
+            .protection_reasons
+            .iter()
+            .any(|r| r == "checkout inspection unavailable")
+    );
+    drain(&service, &status.project.project_id, "available-copy");
+    let recovered = service
+        .status(reference(&status.project.project_id), &caller())
+        .unwrap();
+    let available_copy = recovered
+        .checkouts
+        .iter()
+        .find(|c| {
+            c.worktree_id == unavailable_copy.worktree_id
+                || c.absolute_path == unavailable_copy.absolute_path
+        })
+        .unwrap();
+    assert_eq!(available_copy.registration_state, "registered");
+    assert_eq!(available_copy.dirty, Some(false));
+    assert!(
+        !available_copy
+            .protection_reasons
+            .iter()
+            .any(|r| r == "checkout inspection unavailable")
+    );
     // Removing Git metadata proves the normal read paths use only persisted data.
     fs::rename(
         fixture.repository.join(".git"),
@@ -328,6 +458,199 @@ fn persistent_products_group_explicit_sources_and_clones_and_preserve_missing_in
             .projects
             .len(),
         2
+    );
+}
+
+#[test]
+fn remote_pages_persist_and_keep_source_failures_independent() {
+    use super::github::tests::{Fixture as HttpFixture, Step};
+    use serde_json::json;
+    let fixture = Fixture::new();
+    initialize(&fixture.repository);
+    fixture
+        .database
+        .transaction(|c| {
+            c.execute(
+                "UPDATE repositories SET registered_by_uid=$1 WHERE repository_id='project-alpha'",
+                [caller().uid],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    for index in 0..100 {
+        git(
+            &fixture.repository,
+            &["branch", &format!("feature/{index}")],
+        );
+    }
+    let missing = fixture._temporary.path().join("missing-historical-source");
+    seed(&fixture, "missing-historical", &missing, "missing-checkout");
+    let service = ProjectService::new(
+        fixture.database.clone(),
+        Registry::new(fixture.database.clone()),
+    );
+    let mut remote_source = source("project-alpha", &["project-alpha"]);
+    remote_source.github_url = Some("https://github.com/fixture-owner/fixture-project".into());
+    let configured = configure(
+        &service,
+        &fixture,
+        "Remote",
+        vec![
+            remote_source,
+            source("missing-historical", &["missing-historical"]),
+        ],
+    );
+    let project = &configured.project.project_id;
+    assert_eq!(
+        drain_refresh(&service, project, "local-before-remote").state,
+        "partial"
+    );
+    let local = all_branches(&service, project);
+    assert_eq!(local.len(), 101);
+    let edited = service
+        .update_branch(
+            serde_json::from_value(json!({
+                "project_id": project, "branch_id": local[0].branch_id,
+                "expected_revision": local[0].revision, "intent":"Keep this feature intent"
+            }))
+            .unwrap(),
+            &caller(),
+        )
+        .unwrap();
+    let rows = local
+        .iter()
+        .map(|branch| {
+            json!({
+                "name":branch.branch_name,"commit":{"sha":branch.head},"protected":false
+            })
+        })
+        .collect::<Vec<_>>();
+    let root = "/repos/fixture-owner/fixture-project";
+    let repository = json!({"owner":{"login":"fixture-owner"},"name":"fixture-project","default_branch":"main","node_id":"R_fixture"});
+    let mut steps = vec![
+        Step::get(root, repository.clone()),
+        Step::get(format!("{root}/branches?per_page=100&page=1"), json!(&rows[..100]))
+            .header("Link", "<{origin}/repositories/42/branches?per_page=100&page=2>; rel=\"next\", <{origin}/repositories/42/branches?per_page=100&page=2>; rel=\"last\""),
+        Step::get(format!("{root}/branches?per_page=100&page=2"), json!(&rows[100..]))
+            .header("Link", "<{origin}/repositories/42/branches?per_page=100&page=1>; rel=\"prev\""),
+    ];
+    // The persisted branch IDs determine refresh order; retain exact HTTP
+    // request matching in the shared adapter fixture, including every head.
+    for branch in &local {
+        let mut url = reqwest::Url::parse(&format!("http://fixture.invalid{root}/pulls")).unwrap();
+        url.query_pairs_mut().extend_pairs([
+            ("per_page", "100"),
+            ("page", "1"),
+            ("state", "all"),
+            ("head", &format!("fixture-owner:{}", branch.branch_name)),
+            ("sort", "updated"),
+            ("direction", "desc"),
+        ]);
+        steps.push(Step::get(
+            format!("{}?{}", url.path(), url.query().unwrap()),
+            json!([]),
+        ));
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let snapshot = fixture._temporary.path().join("owner-unavailable-snapshot");
+    git(
+        &fixture.repository,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            snapshot.to_str().unwrap(),
+        ],
+    );
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = fs::metadata(&snapshot).unwrap().permissions();
+    fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o0)).unwrap();
+    let remote = runtime.block_on(HttpFixture::start(steps));
+    let service = service.with_github(remote.client());
+    let job = drain_refresh_kind(&service, project, "remote-complete", true);
+    fs::set_permissions(&snapshot, permissions).unwrap();
+    runtime.block_on(remote.finish());
+    assert_eq!(
+        job.state, "partial",
+        "the separate missing source stays unavailable"
+    );
+    let observed = service.status(reference(project), &caller()).unwrap();
+    let healthy = observed
+        .repositories
+        .iter()
+        .find(|s| s.repository_id == "project-alpha")
+        .unwrap();
+    assert_eq!(healthy.refresh_state, "failed");
+    assert!(healthy.error.is_some(), "local coverage remains incomplete");
+    assert!(healthy.last_success.is_some());
+    let github = healthy.github_observation.as_ref().unwrap();
+    assert_eq!(github.job_id, job.job_id);
+    assert_eq!(github.state, "fresh");
+    assert!(github.last_success.is_some());
+    let unavailable = observed
+        .repositories
+        .iter()
+        .find(|s| s.repository_id == "missing-historical")
+        .unwrap();
+    assert_eq!(unavailable.refresh_state, "failed");
+    assert!(unavailable.last_success.is_none());
+    let branches = all_branches(&service, project);
+    assert_eq!(branches.len(), 101);
+    assert!(
+        branches
+            .iter()
+            .all(|branch| branch.remote_present == Some(true))
+    );
+    assert_eq!(
+        branches
+            .iter()
+            .find(|b| b.branch_id == edited.branch_id)
+            .unwrap()
+            .intent
+            .as_deref(),
+        Some("Keep this feature intent")
+    );
+
+    // A later incomplete remote observation cannot infer that the other
+    // hundred refs disappeared or erase the healthy source's last success.
+    let remote = runtime.block_on(HttpFixture::start(vec![
+        Step::get(root, repository),
+        Step::get(
+            format!("{root}/branches?per_page=100&page=1"),
+            json!(&rows[..1]),
+        )
+        .header(
+            "Link",
+            "<{origin}/repositories/42/commits?per_page=100&page=2>; rel=\"next\"",
+        ),
+    ]));
+    let service = service.with_github(remote.client());
+    assert_eq!(
+        drain_refresh_kind(&service, project, "remote-unavailable", true).state,
+        "partial"
+    );
+    runtime.block_on(remote.finish());
+    let stale = service.status(reference(project), &caller()).unwrap();
+    let stale_source = stale
+        .repositories
+        .iter()
+        .find(|s| s.repository_id == "project-alpha")
+        .unwrap();
+    assert!(stale_source.error.is_some());
+    assert_eq!(stale_source.last_success, healthy.last_success);
+    let stale_github = stale_source.github_observation.as_ref().unwrap();
+    assert_eq!(stale_github.state, "failed");
+    assert_ne!(stale_github.job_id, github.job_id);
+    assert_eq!(stale_github.last_success, github.last_success);
+    assert!(
+        all_branches(&service, project)
+            .iter()
+            .all(|b| b.remote_present == Some(true))
     );
 }
 

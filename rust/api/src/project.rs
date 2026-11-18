@@ -297,10 +297,19 @@ pub struct Repository {
     pub primary_checkout_id: Option<String>,
     pub refresh_state: String,
     pub last_success: Option<String>,
+    #[serde(default)]
+    pub github_observation: Option<GithubObservation>,
     pub error: Option<String>,
     pub permissions: Permissions,
     #[serde(default)]
     pub details_omitted: bool,
+}
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubObservation {
+    pub job_id: String,
+    pub state: String,
+    pub last_success: Option<String>,
 }
 #[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

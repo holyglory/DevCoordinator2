@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { explorerFormalConfig } from './project-explorer-formal.mjs';
+import { hasFreshGithubObservation } from './verify-live-projects.mjs';
 const execute = promisify(execFile);
 
 export async function verifyProjects({page,browser,base,call,request,check,cookieFor,out,root,temporary}) {
@@ -13,6 +14,14 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
   const fixture=await call('fixture.projects.context');
   const id=fixture.project_id, route=`${base}#/projects/${encodeURIComponent(id)}`;
   const branch=()=>page.locator('[data-pe-branch]').filter({hasText:'codex/clock-divider-drag'});
+  await check('Live handoff requires a recent complete GitHub observation independent of local availability',async()=>{
+    const now=Date.now(),last_success=new Date(now).toISOString();
+    const fresh={github_url:'https://github.com/fixture-owner/fixture-project',refresh_state:'failed',error:'Local snapshot unavailable',github_observation:{job_id:'fixture-refresh',state:'fresh',last_success}};
+    assert.equal(hasFreshGithubObservation(fresh,now),true);
+    for(const observation of [null,{...fresh.github_observation,state:'failed'},{...fresh.github_observation,state:'refreshing'},{...fresh.github_observation,job_id:null},{...fresh.github_observation,last_success:'invalid'},{...fresh.github_observation,last_success:new Date(now-11*60*1000).toISOString()},{...fresh.github_observation,last_success:new Date(now+1000).toISOString()}]) {
+      assert.equal(hasFreshGithubObservation({...fresh,refresh_state:'fresh',error:null,last_success,github_observation:observation},now),false);
+    }
+  });
   await check('Project lists preserve explicit product membership',async()=>{
     const result=await call('project.list',{},'owner@example.test');
     assert.equal(result.projects.filter(p=>p.project_id===id).length,1);

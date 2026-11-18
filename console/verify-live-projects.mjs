@@ -5,6 +5,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 
+export function hasFreshGithubObservation(repository, now=Date.now()) {
+  const observation=repository.github_observation;
+  const observed=Date.parse(observation?.last_success||'');
+  return Boolean(repository.github_url && observation?.state==='fresh' && observation.job_id && Number.isFinite(observed) && observed<=now && now-observed<=10*60*1000);
+}
+
 export async function verifyLiveProjects({root,out,base,request,check,checks}) {
   const projectId=process.env.CONSOLE_VERIFY_PROJECT_ID;
   const branchId=process.env.CONSOLE_VERIFY_BRANCH_ID;
@@ -20,7 +26,8 @@ export async function verifyLiveProjects({root,out,base,request,check,checks}) {
   const project=await call('project.status',{project_id:projectId});
   const branch=await call('project.branch.get',{project_id:projectId,branch_id:branchId});
   check('The real project owns the selected branch',project.repositories.some(r=>r.repository_id===branch.repository_id));
-  check('The project has a successful live GitHub observation',project.repositories.some(r=>r.github_url&&r.last_success&&!r.error&&r.refresh_state==='fresh'));
+  const github=project.repositories.filter(r=>hasFreshGithubObservation(r));
+  check('The project has a recent complete live GitHub branch observation',github.length>0);
   const {chromium}=createRequire(path.join(process.env.CONSOLE_VERIFY_PLAYWRIGHT||path.join(root,'ci/playwright'),'package.json'))('playwright');
   const browser=await chromium.launch({args:[`--host-resolver-rules=MAP ${base.hostname} 127.0.0.1`]});
   try {
@@ -54,6 +61,6 @@ export async function verifyLiveProjects({root,out,base,request,check,checks}) {
     await page.setViewportSize({width:390,height:844});await page.goto(route);await page.locator(`[data-pe-branch="${branchId}"]`).waitFor();
     check('Live phone layout fits the viewport',await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
     check('Live Console has no browser exceptions',errors.length===0);
-    await fs.writeFile(path.join(out,'project-observation.json'),JSON.stringify({schema:1,result:'passed',project_id:projectId,branch_id:branchId,source_commit:commit,checked_at_ms:Date.now(),checks:checks.map(c=>({name:c.name,passed:c.passed}))}),{mode:0o600,flag:'wx'});
+    await fs.writeFile(path.join(out,'project-observation.json'),JSON.stringify({schema:1,result:'passed',project_id:projectId,branch_id:branchId,source_commit:commit,github_observations:github.map(r=>({repository_id:r.repository_id,...r.github_observation})),checked_at_ms:Date.now(),checks:checks.map(c=>({name:c.name,passed:c.passed}))}),{mode:0o600,flag:'wx'});
   } finally {await browser.close();}
 }

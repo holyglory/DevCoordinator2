@@ -17,7 +17,7 @@ const TARGET: &str = "dddddddddddddddddddddddddddddddddddddddd";
 const CHANGED: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const BRANCH: &str = "feature/demo";
 
-struct Step {
+pub(in crate::project) struct Step {
     method: &'static str,
     target: String,
     status: u16,
@@ -31,7 +31,7 @@ struct Step {
 }
 
 impl Step {
-    fn get(target: impl Into<String>, value: Value) -> Self {
+    pub(in crate::project) fn get(target: impl Into<String>, value: Value) -> Self {
         Self {
             method: "GET",
             target: target.into(),
@@ -50,7 +50,7 @@ impl Step {
         self.status = status;
         self
     }
-    fn header(mut self, key: &str, value: impl Into<String>) -> Self {
+    pub(in crate::project) fn header(mut self, key: &str, value: impl Into<String>) -> Self {
         self.headers.push((key.into(), value.into()));
         self
     }
@@ -76,7 +76,7 @@ impl Step {
 }
 
 #[derive(Clone, Debug)]
-struct Captured {
+pub(in crate::project) struct Captured {
     method: String,
     target: String,
     authorized: bool,
@@ -84,7 +84,7 @@ struct Captured {
     body: Option<Value>,
 }
 
-struct Fixture {
+pub(in crate::project) struct Fixture {
     _private: tempfile::TempDir,
     token_file: PathBuf,
     address: std::net::SocketAddr,
@@ -93,7 +93,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn start(steps: Vec<Step>) -> Self {
+    pub(in crate::project) async fn start(steps: Vec<Step>) -> Self {
         let private = tempfile::tempdir().unwrap();
         let token_file = private.path().join("github.token");
         std::fs::write(&token_file, format!("{TOKEN}\n")).unwrap();
@@ -211,11 +211,11 @@ impl Fixture {
         }
     }
 
-    fn client(&self) -> GithubClient {
+    pub(in crate::project) fn client(&self) -> GithubClient {
         GithubClient::fixture(self.token_file.clone(), self.address).unwrap()
     }
 
-    async fn finish(mut self) -> Vec<Captured> {
+    pub(in crate::project) async fn finish(mut self) -> Vec<Captured> {
         let task = self.server.as_mut().unwrap();
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
@@ -457,6 +457,38 @@ async fn http_exactly_full_page_is_partial_until_remote_end_is_observed() {
         .unwrap();
     assert!(final_page.complete && final_page.items.is_empty());
     fixture.finish().await;
+
+    // Live GitHub advertises the numeric repository route even when the
+    // request uses owner/name. Keep every request on the configured route.
+    let branches = (0..100)
+        .map(|i| branch_json(&format!("feature/{i}"), FEATURE))
+        .collect::<Vec<_>>();
+    let fixture = Fixture::start(vec![
+        Step::get(format!("{}/branches?per_page=100&page=1", root()), json!(branches))
+            .header("Link", "<{origin}/repositories/1345467616/branches?per_page=100&page=2>; rel=\"next\", <{origin}/repositories/1345467616/branches?per_page=100&page=2>; rel=\"last\""),
+        Step::get(format!("{}/branches?per_page=100&page=2", root()), json!([branch_json("main", TARGET)]))
+            .header("Link", "<{origin}/repositories/1345467616/branches?per_page=100&page=1>; rel=\"prev\", <{origin}/repositories/1345467616/branches?per_page=100&page=1>; rel=\"first\""),
+    ]).await;
+    let client = fixture.client();
+    let first = client
+        .list_branches(&repository(), None, 100)
+        .await
+        .unwrap();
+    assert_eq!(first.items.len(), 100);
+    assert_eq!(first.next_cursor.as_deref(), Some("2"));
+    assert!(!first.complete);
+    let second = client
+        .list_branches(&repository(), first.next_cursor.as_deref(), 100)
+        .await
+        .unwrap();
+    assert_eq!(second.items[0].name, "main");
+    assert!(second.complete);
+    let captured = fixture.finish().await;
+    assert!(
+        captured
+            .iter()
+            .all(|request| request.target.starts_with(root()))
+    );
 }
 
 #[tokio::test]
@@ -483,6 +515,12 @@ async fn http_pagination_rejects_other_hosts_queries_and_skipped_pages() {
             root()
         ),
         "malformed".into(),
+        "<{origin}/repos/unrelated/source/branches?per_page=2&page=2>; rel=\"next\"".into(),
+        "<{origin}/repositories/42/commits?per_page=2&page=2>; rel=\"next\"".into(),
+        "<{origin}/repositories/42/branches/extra?per_page=2&page=2>; rel=\"next\"".into(),
+        "<{origin}/repositories/0/branches?per_page=2&page=2>; rel=\"next\"".into(),
+        "<{origin}/repositories/not-an-id/branches?per_page=2&page=2>; rel=\"next\"".into(),
+        "<{origin}/repositories/42/branches?per_page=2&page=2&sha=other>; rel=\"next\"".into(),
     ];
     for link in links {
         let fixture = Fixture::start(vec![
@@ -1009,8 +1047,7 @@ async fn http_commit_graph_keeps_pagination_anchored_and_rejects_missing_parents
         .header(
             "Link",
             format!(
-                "<{{origin}}{}/commits?per_page=1&page=2&sha={FEATURE}>; rel=\"next\"",
-                root()
+                "<{{origin}}/repositories/42/commits?per_page=1&page=2&sha={FEATURE}>; rel=\"next\""
             ),
         ),
         Step::get(
@@ -1038,7 +1075,8 @@ async fn http_commit_graph_keeps_pagination_anchored_and_rejects_missing_parents
 async fn http_pr_pagination_omits_forks_without_claiming_end_of_collection() {
     let mut fork = pull_json();
     fork["head"]["repo"]["owner"]["login"] = "other-owner".into();
-    let fixture=Fixture::start(vec![Step::get(format!("{}/pulls?per_page=1&page=1&state=all&head=fixture-owner%3Afeature%2Fdemo&sort=updated&direction=desc",root()),json!([fork]))]).await;
+    let fixture=Fixture::start(vec![Step::get(format!("{}/pulls?per_page=1&page=1&state=all&head=fixture-owner%3Afeature%2Fdemo&sort=updated&direction=desc",root()),json!([fork]))
+        .header("Link", "<{origin}/repositories/42/pulls?per_page=1&page=2&state=all&head=fixture-owner%3Afeature%2Fdemo&sort=updated&direction=desc>; rel=\"next\"")]).await;
     let page = fixture
         .client()
         .pull_requests(&repository(), BRANCH, None, 1)

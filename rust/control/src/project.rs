@@ -538,9 +538,11 @@ fn load_sources(
     id: &str,
     scope: &Scope,
 ) -> Result<Vec<api::Repository>, DatabaseError> {
-    let rows=c.prepare(&format!("SELECT s.repository_id,s.name,s.github_url,s.default_branch,s.primary_checkout_id,s.refresh_state,s.last_success,s.error FROM project_sources s WHERE s.project_id=$1 AND {SOURCE_VISIBLE} ORDER BY s.repository_id LIMIT 257"))?.query_map(params![id,scope.visible_json()],|r|Ok(api::Repository{repository_id:r.get(0)?,name:r.get(1)?,github_url:r.get(2)?,default_branch:r.get(3)?,primary_checkout_id:r.get(4)?,refresh_state:r.get(5)?,last_success:r.get(6)?,error:r.get(7)?,permissions:api::Permissions{edit:false,cleanup:false,admin:scope.admin},details_omitted:false}))?.collect::<crate::database::Result<Vec<_>>>()?;
+    let rows=c.prepare(&format!("SELECT s.repository_id,s.name,s.github_url,s.default_branch,s.primary_checkout_id,s.refresh_state,s.last_success,s.error FROM project_sources s WHERE s.project_id=$1 AND {SOURCE_VISIBLE} ORDER BY s.repository_id LIMIT 257"))?.query_map(params![id,scope.visible_json()],|r|Ok(api::Repository{repository_id:r.get(0)?,name:r.get(1)?,github_url:r.get(2)?,default_branch:r.get(3)?,primary_checkout_id:r.get(4)?,refresh_state:r.get(5)?,last_success:r.get(6)?,github_observation:None,error:r.get(7)?,permissions:api::Permissions{edit:false,cleanup:false,admin:scope.admin},details_omitted:false}))?.collect::<crate::database::Result<Vec<_>>>()?;
     let mut result = Vec::new();
     for mut row in rows {
+        row.github_observation =
+            refresh::github_observation(c, id, &row.repository_id, row.github_url.as_deref())?;
         let editable = source_editable(c, id, &row.repository_id, scope)?;
         row.permissions.edit = editable;
         row.permissions.cleanup = editable;
