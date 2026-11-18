@@ -2429,7 +2429,7 @@ pub struct UsageTotals {
     pub cost: UsageCost,
 }
 
-#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageCost {
     pub status: String,

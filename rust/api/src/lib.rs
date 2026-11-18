@@ -11,6 +11,8 @@ pub mod agent_hub;
 pub mod agent_routing;
 pub mod completion;
 pub mod configuration;
+#[doc(hidden)]
+pub mod cost_component;
 pub mod delivery;
 pub mod glossary;
 pub mod incidents;

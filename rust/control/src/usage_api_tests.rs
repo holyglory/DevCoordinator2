@@ -742,6 +742,187 @@ fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
             "{field}"
         );
     }
+    let source_cost = json!({
+        "basis":"api_equivalent","currency":"USD","status":"partial","processingTier":"standard",
+        "estimatedUsdMicros":2,"inputUsdMicros":2,"cachedInputUsdMicros":0,"cacheWriteUsdMicros":0,"outputUsdMicros":0,
+        "inputTokens":135,"uncachedInputTokens":135,"cachedInputTokens":0,"cacheWriteTokens":0,"outputTokens":0,"reasoningTokens":0,
+        "providerTotalTokens":135,"pricedObservations":1,"unknownObservations":1,"rateCardRefs":["fixture-standard"]
+    });
+    let review_cost = serde_json::to_value(UsageCost {
+        status: "partial".into(),
+        basis: "api_equivalent".into(),
+        currency: "USD".into(),
+        estimated_usd_micros: Some(2),
+        input_usd_micros: Some(2),
+        cached_input_usd_micros: Some(0),
+        cache_write_usd_micros: Some(0),
+        output_usd_micros: Some(0),
+        unknown_observations: Some(1),
+        ..Default::default()
+    })
+    .unwrap();
+    let outside_u64: Value = serde_json::from_str("18446744073709551616").unwrap();
+    for (name, component, status, cached) in [
+        (
+            "missing exact",
+            json!({"measured":0,"unknown":1}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "missing measured",
+            json!({"exact":0,"unknown":0}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "missing unknown",
+            json!({"measured":0,"exact":0}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "extra key",
+            json!({"measured":0,"exact":null,"unknown":1,"private_detail":"fixture-private-value"}),
+            "partial",
+            json!(0),
+        ),
+        ("negative scalar", json!(-1), "partial", json!(0)),
+        ("fractional scalar", json!(1.5), "partial", json!(0)),
+        (
+            "negative measured",
+            json!({"measured":-1,"exact":null,"unknown":1}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "fractional measured",
+            json!({"measured":1.5,"exact":null,"unknown":1}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "boolean measured",
+            json!({"measured":true,"exact":null,"unknown":1}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "mismatched exact",
+            json!({"measured":2,"exact":1,"unknown":0}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "unknown exact",
+            json!({"measured":2,"exact":2,"unknown":1}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "negative unknown",
+            json!({"measured":2,"exact":null,"unknown":-1}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "missing cost uncertainty",
+            json!({"measured":2,"exact":null,"unknown":1}),
+            "complete",
+            json!(0),
+        ),
+        (
+            "unsupported cost status",
+            json!({"measured":2,"exact":null,"unknown":1}),
+            "unknown",
+            json!(0),
+        ),
+        ("overflow scalar", outside_u64.clone(), "partial", json!(0)),
+        (
+            "overflow measured",
+            json!({"measured":outside_u64,"exact":null,"unknown":1}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "overflow unknown",
+            json!({"measured":0,"exact":null,"unknown":outside_u64}),
+            "partial",
+            json!(0),
+        ),
+        (
+            "overflow component sum",
+            json!({"measured":u64::MAX,"exact":u64::MAX,"unknown":0}),
+            "partial",
+            json!(1),
+        ),
+    ] {
+        for path in [
+            "/report/cost",
+            "/review/totals/cost",
+            "/review/activities/0/cost",
+            "/review/outcomes/totals/cost",
+            "/review/outcomes/attributed/cost",
+            "/review/outcomes/unattributed/cost",
+        ] {
+            let mut candidate = value.clone();
+            let camel = path == "/report/cost";
+            let mut cost = if camel {
+                source_cost.clone()
+            } else {
+                review_cost.clone()
+            };
+            cost["status"] = json!(status);
+            cost[if camel {
+                "inputUsdMicros"
+            } else {
+                "input_usd_micros"
+            }] = component.clone();
+            cost[if camel {
+                "cachedInputUsdMicros"
+            } else {
+                "cached_input_usd_micros"
+            }] = cached.clone();
+            let (parent, field) = path.rsplit_once('/').unwrap();
+            candidate.pointer_mut(parent).unwrap()[field] = cost;
+            assert!(
+                serde_json::from_value::<Summary>(candidate).is_err(),
+                "{name}: {path}"
+            );
+        }
+    }
+    for path in ["/report/cost", "/review/totals/cost"] {
+        let mut candidate = value.clone();
+        let camel = path == "/report/cost";
+        let mut cost = if camel {
+            source_cost.clone()
+        } else {
+            review_cost.clone()
+        };
+        cost[if camel {
+            "inputUsdMicros"
+        } else {
+            "input_usd_micros"
+        }] = json!({"measured":u64::MAX,"exact":u64::MAX,"unknown":0});
+        cost[if camel { "inputTokens" } else { "input_tokens" }] = json!(-2);
+        let (parent, field) = path.rsplit_once('/').unwrap();
+        candidate.pointer_mut(parent).unwrap()[field] = cost;
+        let accepted: Summary = serde_json::from_value(candidate).unwrap();
+        let cost = if camel {
+            accepted.report.cost.unwrap().usage_cost()
+        } else {
+            accepted.review.unwrap().totals.cost
+        };
+        assert_eq!(cost.input_usd_micros, Some(u64::MAX), "{path}");
+        assert_eq!(
+            cost.input_tokens,
+            Some(-2),
+            "signed token adjustments remain signed"
+        );
+    }
+    let mut unknown_cost_field = review_cost;
+    unknown_cost_field["private_detail"] = json!("fixture-private-value");
+    assert!(serde_json::from_value::<UsageCost>(unknown_cost_field).is_err());
 }
 
 #[test]

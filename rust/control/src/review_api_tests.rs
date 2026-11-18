@@ -77,6 +77,200 @@ fn priced_response(params: &Value) -> Value {
 }
 
 #[test]
+fn performance_cost_components_accept_scalar_null_and_measured_transport_values() {
+    let cases = [
+        (
+            "unknown",
+            json!({"measured":0,"exact":null,"unknown":2}),
+            None,
+            "unavailable",
+            2,
+        ),
+        (
+            "exact-zero",
+            json!({"measured":0,"exact":0,"unknown":0}),
+            Some(0),
+            "complete",
+            0,
+        ),
+        (
+            "partial",
+            json!({"measured":17,"exact":null,"unknown":1}),
+            Some(17),
+            "partial",
+            1,
+        ),
+        ("scalar", json!(17), Some(17), "complete", 0),
+        ("scalar-zero", json!(0), Some(0), "complete", 0),
+        ("null", Value::Null, None, "unavailable", 2),
+    ];
+    let mut failures = Vec::new();
+    for (name, component, expected, status, unknown) in cases {
+        let mut fixture = Fixture::new();
+        let root = fixture._temporary.path();
+        let remainder = if component.is_object() {
+            if expected.is_none() {
+                component.clone()
+            } else {
+                json!({"measured":0,"exact":0,"unknown":0})
+            }
+        } else if expected.is_some() {
+            json!(0)
+        } else {
+            Value::Null
+        };
+        let expected_remainder = expected.map(|_| 0);
+        let wire_component = component.clone();
+        let wire_remainder = remainder.clone();
+        let peer = Peer::start(root, &root.join(name), move |params| {
+            let mut value = priced_response(params);
+            let cost = &mut value["report"]["cost"];
+            cost["status"] = json!(status);
+            cost["estimatedUsdMicros"] = json!(expected);
+            cost["inputUsdMicros"] = wire_component.clone();
+            for key in [
+                "cachedInputUsdMicros",
+                "cacheWriteUsdMicros",
+                "outputUsdMicros",
+            ] {
+                cost[key] = wire_remainder.clone();
+            }
+            cost["unknownObservations"] = json!(unknown);
+            cost["pricedObservations"] = json!(if expected.is_none() { 0 } else { 2 - unknown });
+            cost["rateCardRefs"] = if expected.is_some() {
+                json!(["fixture-standard"])
+            } else {
+                json!([])
+            };
+            let review_cost = json!({
+                "status":status,"basis":"api_equivalent","currency":"USD","processing_tier":"standard",
+                "estimated_usd_micros":expected,"input_usd_micros":wire_component,
+                "cached_input_usd_micros":wire_remainder,"cache_write_usd_micros":wire_remainder,"output_usd_micros":wire_remainder,
+                "unknown_observations":unknown,"rate_card_refs":["fixture-standard"],"model_requests":2,
+            });
+            value["review"]["totals"]["cost"] = review_cost.clone();
+            value["review"]["activities"][0]["cost"] = review_cost.clone();
+            value["review"]["outcomes"]["totals"]["cost"] = review_cost.clone();
+            let mut attributed_cost = review_cost.clone();
+            let mut unattributed_cost = review_cost;
+            attributed_cost["unknown_observations"] = json!(unknown.min(1));
+            unattributed_cost["unknown_observations"] = json!(u64::from(expected.is_none()));
+            unattributed_cost["status"] = json!(if expected.is_some() {
+                "complete"
+            } else {
+                "unavailable"
+            });
+            unattributed_cost["estimated_usd_micros"] = json!(expected.map(|_| 0));
+            for field in [
+                "input_usd_micros",
+                "cached_input_usd_micros",
+                "cache_write_usd_micros",
+                "output_usd_micros",
+            ] {
+                if expected.is_none() && attributed_cost[field].is_object() {
+                    attributed_cost[field]["unknown"] = json!(1);
+                }
+                unattributed_cost[field] = if expected.is_none() {
+                    attributed_cost[field].clone()
+                } else if wire_component.is_object() {
+                    json!({"measured":0,"exact":0,"unknown":0})
+                } else {
+                    json!(0)
+                };
+            }
+            value["review"]["outcomes"]["attributed"]["cost"] = attributed_cost.clone();
+            value["review"]["outcomes"]["unattributed"]["cost"] = unattributed_cost;
+            for row in value["review"]["outcomes"]["rows"].as_array_mut().unwrap() {
+                row["effort"]["cost"] = attributed_cost.clone();
+            }
+            value
+        });
+        let authorized = caller();
+        crate::usage_context::ingest(
+            &fixture.database,
+            authorized.uid,
+            "project-alpha",
+            authorized.work.as_ref().unwrap(),
+            START + 1,
+        )
+        .unwrap();
+        fixture.service = service(&fixture, peer.source.clone());
+        let params = || devcoordinator2_api::performance::Overview {
+            repository_id: "project-alpha".into(),
+            window_start_ms: START,
+            window_end_ms: START + WEEK,
+            outcome_cursor: None,
+            outcome_limit: Some(5),
+            totals_only: false,
+            wait_for_refresh: true,
+        };
+        let _ = fixture
+            .service
+            .performance_overview(params(), START + WEEK)
+            .unwrap();
+        assert!(
+            fixture
+                .service
+                .usage
+                .wait_for_collector_refresh(Instant::now() + std::time::Duration::from_secs(3))
+        );
+        let result = fixture
+            .service
+            .performance_overview(params(), START + WEEK)
+            .unwrap();
+        if result.coverage.available_collectors != 1 {
+            failures.push(format!(
+                "{name}: source rejected with {:?}",
+                result.coverage.unavailable_reasons
+            ));
+            continue;
+        }
+        assert_eq!(result.total_tokens.measured, 135, "{name}");
+        assert_eq!(result.cost.input_usd_micros, expected, "{name}");
+        assert_eq!(
+            result.cost.cached_input_usd_micros, expected_remainder,
+            "{name}"
+        );
+        assert_eq!(result.cost.status, status, "{name}");
+        assert_eq!(result.cost.unknown_observations, Some(unknown), "{name}");
+        let usage = result.usage.unwrap();
+        assert_eq!(usage.activities.len(), 1, "{name}");
+        assert_eq!(usage.outcomes.rows.len(), 1, "{name}");
+        assert_eq!(
+            usage.outcomes.totals.cost.unknown_observations,
+            Some(unknown),
+            "{name}"
+        );
+        for cost in [
+            &usage.outcomes.attributed.cost,
+            &usage.outcomes.rows[0].effort.cost,
+        ] {
+            assert_eq!(cost.input_usd_micros, expected, "{name}");
+            assert_eq!(cost.cached_input_usd_micros, expected_remainder, "{name}");
+            assert_eq!(cost.status, status, "{name}");
+            assert_eq!(cost.unknown_observations, Some(unknown.min(1)), "{name}");
+        }
+        let cost = &usage.outcomes.unattributed.cost;
+        assert_eq!(cost.input_usd_micros, expected.map(|_| 0), "{name}");
+        assert_eq!(cost.cached_input_usd_micros, expected_remainder, "{name}");
+        assert_eq!(
+            cost.unknown_observations,
+            Some(u64::from(expected.is_none())),
+            "{name}"
+        );
+        let requests = peer.requests.lock().unwrap();
+        let summary = requests
+            .iter()
+            .find(|request| request["method"] == "localUsage/summary")
+            .unwrap();
+        assert_eq!(summary["params"]["includeReview"], true);
+        assert_eq!(summary["params"]["fromAt"], START);
+        assert_eq!(summary["params"]["toAt"], START + WEEK);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn performance_headlines_preserve_exact_components_and_nullable_deferred_counts() {
     let mut fixture = Fixture::new();
     let root = fixture._temporary.path();
