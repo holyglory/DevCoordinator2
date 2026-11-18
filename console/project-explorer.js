@@ -87,10 +87,17 @@ window.DevCoordinatorProjectExplorer = (() => {
     session.dispose = () => { s.disposed = true; s.observer?.disconnect(); s.disconnectLinks?.(); root.removeEventListener('click', onClick); root.removeEventListener('keydown', treeKeyboard); root.removeEventListener('keydown', railEscape); dialogs.forEach(dialog => dialog.remove()); };
     signal.addEventListener('abort', session.dispose, { once: true });
     function paintProjects() {
-      const projects = [...s.projects];
-      if (s.data?.project && !projects.some(p => p.project_id === s.data.project.project_id)) {
-        projects.unshift({ project_id: s.data.project.project_id, name: s.data.project.name });
+      // The collection endpoint and a project-scoped response can both carry
+      // the current project. Merge by identity before rendering so the rail
+      // never shows the same project twice while the background reads settle.
+      const projectsById = new Map();
+      for (const project of s.projects) {
+        if (project?.project_id) projectsById.set(project.project_id, project);
       }
+      if (s.data?.project?.project_id && !projectsById.has(s.data.project.project_id)) {
+        projectsById.set(s.data.project.project_id, { project_id: s.data.project.project_id, name: s.data.project.name });
+      }
+      const projects = [...projectsById.values()];
       find('project-list').innerHTML = projects.map(p => `<a class="pe-project" href="${href(p.project_id)}"${p.project_id === s.projectId ? ' aria-current="page"' : ''}>${icon('folder')}<span>${escape(p.name)}</span></a>`).join('') || `<p class="pe-muted">${h('noProjects')}</p>`;
       find('more-projects').hidden = !s.projectCursor;
     }

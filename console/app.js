@@ -5139,6 +5139,7 @@ async function render() {
   main.classList.toggle('health-page', view === 'health');
   main.classList.toggle('storage-page', view === 'storage');
   main.classList.toggle('project-explorer-page', view === 'projects');
+  document.body.classList.toggle('project-explorer-shell', view === 'projects');
   main.classList.toggle('tickets-page', view === 'requests');
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
