@@ -601,6 +601,16 @@ async function startFakeDaemon(dir) {
         && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))
         && !scenario.delayExceptOperations?.includes(req.operation)) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
+      if (cmd === 'project.context' && scenario.projectContextFixture) {
+        if (scenario.projectContextHold && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+        const repositoryIds = Array.isArray(req.params.repository_ids) ? req.params.repository_ids : [];
+        if (repositoryIds.includes(scenario.projectContextErrorRepository)) return reply({ ok: false, error: { code: 'internal_error', message: 'Fixture project membership unavailable', detail: '' } });
+        return reply({ ok: true, data: {
+          memberships: repositoryIds.map((repository_id) => ({
+            repository_id, project_id: 'project-console-fixture', project_name: 'Console test project',
+          })),
+        } });
+      }
       if ((scenario.cacheState || scenario.usageIndexing) && req.params.wait_for_refresh && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
       if (cmd === 'user.whoami' && process.env.CONSOLE_VERIFY_RESET_PLAN_ON_SESSION === '1') {
         mutable.taskUpdates.clear();
@@ -865,6 +875,12 @@ async function startFakeDaemon(dir) {
         }
         if (scenario.workspacePaging && req.params.after_repository_id) {
           if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+          if (scenario.projectContextPagingFixture) {
+            return reply({ ok: true, data: {
+              repositories: [{ repository_id: 'r-later', root_path: '/repo-later', display_name: 'later-repo', registered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z', archived_at: null, archived_by_uid: null, archive_note: null, merged_into_repository_id: null, worktrees: [] }],
+              next_repository_id: null,
+            } });
+          }
           return reply({ ok: true, data: { repositories: [], next_repository_id: null } });
         }
         if (scenario.workspaceLongList) {
@@ -1095,17 +1111,17 @@ async function main() {
     return;
   }
 
-  if (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY || process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY || process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY || process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
+  if (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY || process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY || process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY || process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_CONTEXT_DELAY_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
     try {
-      const translatedViewports = process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [...(process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? [{ width: 1810, height: 1226 }, { width: 1523, height: 1033 }, { width: 1001, height: 900 }] : []), { width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
+      const translatedViewports = process.env.CONSOLE_VERIFY_CONTEXT_DELAY_ONLY ? [{ width: Number(process.env.CONSOLE_VERIFY_CONTEXT_DELAY_WIDTH || 1440), height: Number(process.env.CONSOLE_VERIFY_CONTEXT_DELAY_HEIGHT || 900) }] : process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [...(process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? [{ width: 1810, height: 1226 }, { width: 1523, height: 1033 }, { width: 1001, height: 900 }] : []), { width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
       for (const viewport of translatedViewports) {
-        for (const theme of ['light', 'dark']) {
+        for (const theme of process.env.CONSOLE_VERIFY_CONTEXT_DELAY_ONLY ? ['dark'] : ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
           const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
           await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
           const page = await context.newPage();
           page.setDefaultTimeout(8000);
-          try { await (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY ? verifyTranslatedConsole : process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY ? verifyLocalization : process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? verifyPerformance : process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY ? verifyEvidenceLayout : process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+          try { await (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY ? verifyTranslatedConsole : process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY ? verifyLocalization : process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? verifyPerformance : process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY ? verifyEvidenceLayout : process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : (process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_CONTEXT_DELAY_ONLY) ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
           catch (error) { check(`Tests design ${theme} ${viewport.width}`, false, error.message); }
           await context.close();
         }

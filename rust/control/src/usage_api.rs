@@ -12,6 +12,9 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Condvar, Mutex};
 use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
 
+#[path = "usage_api_cost.rs"]
+mod cost_wire;
+
 const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 const MAX_CACHED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHED: usize = 96;
@@ -668,8 +671,7 @@ pub(super) struct WorktreeCoverage {
     pub unassigned_token_observation_count: u64,
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub(super) struct SourceCost {
     pub basis: String,
     pub currency: String,
@@ -690,7 +692,6 @@ pub(super) struct SourceCost {
     pub priced_observations: u64,
     pub unknown_observations: u64,
     pub rate_card_refs: Vec<String>,
-    #[serde(default)]
     pub unavailable_reasons: BTreeMap<String, u64>,
 }
 
