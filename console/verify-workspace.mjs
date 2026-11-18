@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { chooseRepository } from './verify-tests-pane.mjs';
 
@@ -43,6 +44,102 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   const verify = (name, condition, detail = '') => check(`workspace ${theme} ${viewport.width}: ${name}`, condition, detail);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  if (process.env.CONSOLE_VERIFY_CONTEXT_DELAY_ONLY === 'metadata-failure') {
+    const lateRepository = 'rffffffffffffffff';
+    await isolateScenario(page, daemon, { ...scenario, projectContextFixture: true, projectContextDelayMs: 150, projectContextErrorRepository: lateRepository });
+    await page.goto(baseUrl + '#/performance/' + repositoryId);
+    await page.waitForFunction(() => document.querySelector('#workspace-heading')?.textContent.includes('Console test project'));
+    const failedContext = page.waitForResponse(response => response.url().endsWith('/project.context') && response.request().postDataJSON().repository_ids.includes(lateRepository));
+    await page.evaluate(id => { location.hash = '#/performance/' + id; }, lateRepository);
+    const failed = await failedContext;
+    const failureEnvelope = await failed.json();
+    await page.locator('.performance-cost-matrix tbody tr').first().waitFor();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const state = await page.evaluate(() => ({
+      route: location.hash.split('?')[0],
+      period: document.querySelector('[data-performance-period-total]')?.innerText,
+      lifetime: document.querySelector('[data-performance-lifetime]')?.innerText,
+      status: document.querySelector('#repository-status')?.innerText,
+      expectedStatus: window.DevCoordinatorI18n.t('shell.value1_repositories_unavailable_refresh_to_retry_426a76', { value1: window.DevCoordinatorI18n.t('common.projects_04e2a9') }),
+    }));
+    await fs.writeFile(path.join(output, 'context-failure-state.json'), JSON.stringify({ state, errorCode: failureEnvelope.error?.code, errors }, null, 2) + '\n', { mode: 0o600 });
+    verify('late project metadata failure is actually returned', failureEnvelope.ok === false && failureEnvelope.error?.code === 'internal_error');
+    verify('late project metadata failure preserves measured Performance and exact scope', state.route === '#/performance/' + lateRepository && state.period?.includes('6.4M') && state.lifetime?.includes('32M'), JSON.stringify(state));
+    verify('late project metadata failure reports the existing localized Projects status', state.status === state.expectedStatus, JSON.stringify(state));
+    verify('late project metadata failure has no unhandled browser error', errors.length === 0, JSON.stringify(errors));
+    return;
+  }
+  if (process.env.CONSOLE_VERIFY_CONTEXT_DELAY_ONLY) {
+    await page.addInitScript(() => {
+      window.contextDelayTrace = [];
+      const at = () => performance.now();
+      const fetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const request = args[0] instanceof Request ? args[0].url : String(args[0]);
+        const operation = new URL(request, location.href).pathname.split('/').at(-1);
+        window.contextDelayTrace.push({ kind: 'fetch-start', operation, at: at() });
+        const response = await fetch(...args);
+        window.contextDelayTrace.push({ kind: 'fetch-response', operation, at: at(), status: response.status });
+        return response;
+      };
+      const observer = new MutationObserver(() => {
+        for (const [name, selector] of [['page', '[data-performance-page]'], ['period', '[data-performance-period-total]'], ['lifetime', '[data-performance-lifetime]']]) {
+          const node = document.querySelector(selector);
+          const value = node?.textContent?.trim() || '';
+          if (node && !window.contextDelayTrace.some((entry) => entry.kind === 'dom' && entry.name === name && entry.value === value)) {
+            window.contextDelayTrace.push({ kind: 'dom', name, value, at: at() });
+          }
+        }
+      });
+      observer.observe(document, { childList: true, subtree: true, characterData: true });
+    });
+    await isolateScenario(page, daemon, { ...scenario, workspacePaging: true, projectContextFixture: true, projectContextPagingFixture: true, projectContextDelayMs: 2000 });
+    const startedAt = Date.now();
+    const projectContextResponsePromise = page.waitForResponse((response) => response.url().endsWith('/project.context') && !response.request().postData().includes('r-later'), { timeout: 12000 });
+    const laterContextResponsePromise = page.waitForResponse((response) => response.url().endsWith('/project.context') && response.request().postData().includes('r-later'), { timeout: 12000 });
+    await page.goto(baseUrl + '#/performance/' + repositoryId);
+    await page.waitForRequest((request) => request.url().endsWith('/project.context'), { timeout: 8000 });
+    const releaseTimer = setTimeout(() => daemon.releaseDelayed(), 2000);
+    await page.waitForSelector('[data-performance-page]', { timeout: 12000 }).catch(() => {});
+    await page.waitForFunction(() => /^\s*(?:≥\s*)?\d/.test(document.querySelector('[data-performance-period-total]')?.textContent || ''), null, { timeout: 12000 }).catch(() => {});
+    const periodButton = page.locator('[data-performance-period-total] .performance-token-detail-button');
+    await periodButton.click({ timeout: 3000 }).catch(() => {});
+    const popoverBox = () => page.evaluate(() => {
+      const node = document.querySelector('[data-performance-period-total] .performance-token-popover');
+      if (!node || !node.getClientRects().length) return null;
+      const box = node.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight };
+    });
+    const popoverBefore = await popoverBox();
+    const projectContextResponse = await projectContextResponsePromise.catch(() => null);
+    const laterContextResponse = await laterContextResponsePromise.catch(() => null);
+    clearTimeout(releaseTimer);
+    daemon.releaseDelayed();
+    await page.waitForSelector('[data-performance-page]', { timeout: 5000 }).catch(() => {});
+    await page.waitForFunction(() => document.querySelector('#workspace-heading')?.textContent?.includes('Console test project'), null, { timeout: 5000 }).catch(() => {});
+    const popoverAfter = await popoverBox();
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const trace = await page.evaluate(() => window.contextDelayTrace);
+    const request = trace.find((entry) => entry.kind === 'fetch-start' && entry.operation === 'project.context');
+    const contextResponse = trace.find((entry) => entry.kind === 'fetch-response' && entry.operation === 'project.context');
+    const performanceResponses = trace.filter((entry) => entry.kind === 'fetch-response' && entry.operation === 'performance.overview');
+    const pagePaint = trace.find((entry) => entry.kind === 'dom' && entry.name === 'page');
+    const periodPaint = trace.find((entry) => entry.kind === 'dom' && entry.name === 'period' && /^\s*(?:≥\s*)?\d/.test(entry.value));
+    const lifetimePaint = trace.find((entry) => entry.kind === 'dom' && entry.name === 'lifetime' && /^\s*(?:≥\s*)?\d/.test(entry.value));
+    const calls = daemon.calls.filter((call) => ['project.context', 'performance.overview'].includes(call.operation));
+    const membership = await page.locator('#workspace-heading').innerText().catch(() => '');
+    const timing = { startedAt, requestAt: request?.at ?? null, contextResponseAt: contextResponse?.at ?? null, laterContextResponseStatus: laterContextResponse?.status() ?? null, performanceResponseAt: performanceResponses[0]?.at ?? null, pagePaintAt: pagePaint?.at ?? null, periodPaintAt: periodPaint?.at ?? null, lifetimePaintAt: lifetimePaint?.at ?? null, popoverBefore, popoverAfter, trace, calls, membership, url: page.url() };
+    await fs.writeFile(path.join(output, 'context-delay-timing.json'), JSON.stringify(timing, null, 2) + '\n', { mode: 0o600 });
+    verify('context-delay fixture returns valid memberships and keeps the requested Performance scope', contextResponse?.status === 200 && membership.includes('Console test project') && page.url().includes('/performance/' + repositoryId), JSON.stringify(timing));
+    verify('prefetched Performance summaries arrive before the delayed project context response', performanceResponses.length >= 2 && performanceResponses[0].at < (contextResponse?.at ?? Infinity), JSON.stringify(timing));
+    verify('Performance headlines paint within one second while project context is delayed', periodPaint && lifetimePaint && periodPaint.at - (request?.at ?? periodPaint.at) < 1000 && lifetimePaint.at - (request?.at ?? lifetimePaint.at) < 1000, JSON.stringify(timing));
+    const contextCalls = calls.filter((call) => call.operation === 'project.context');
+    const contextIds = contextCalls.flatMap((call) => call.params.repository_ids || []);
+    verify('later repository pages coalesce context reads and acquire project membership', laterContextResponse?.status() === 200 && contextCalls.length >= 2 && contextIds.includes('r-later') && new Set(contextIds).size === contextIds.length, JSON.stringify(timing));
+    const contained = (box) => box && box.left >= 0 && box.top >= 0 && box.right <= box.viewportWidth && box.bottom <= box.viewportHeight;
+    verify('open token popover remains visible and contained across metadata repaint', contained(popoverBefore) && contained(popoverAfter), JSON.stringify(timing));
+    return;
+  }
   await page.addInitScript(() => {
     window.workspaceTiming = { lcp: 0, longTasks: [] };
     const ready = new MutationObserver(() => {

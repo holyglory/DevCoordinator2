@@ -337,22 +337,59 @@ window.DevCoordinatorWorkspace = (() => {
       }
     }
 
-    async function loadProjectContext(signal) {
+    function loadProjectContext(signal) {
       const snapshot = data;
-      if (!snapshot) return;
-      const ids = [...new Set([...snapshot.plans, ...snapshot.registered, ...snapshot.runs, ...snapshot.deployments].map(row => row.repository_id).filter(Boolean))].filter(id => !snapshot.contextRead.has(id));
-      for (let offset = 0; offset < ids.length && !signal.aborted; offset += 200) {
-        const page = ids.slice(offset, offset + 200);
-        try {
-          const result = await apiPage('project.context', { repository_ids: page });
-          if (signal.aborted || data !== snapshot) return;
-          for (const member of result.memberships || []) snapshot.memberships.set(member.repository_id, member);
-          page.forEach(id => snapshot.contextRead.add(id));
-        } catch (error) {
-          if (!['operation_unknown', 'permission_denied'].includes(error.code)) throw error;
-          page.forEach(id => snapshot.contextRead.add(id));
+      if (!snapshot) return Promise.resolve();
+      if (snapshot.projectContextSignal === signal && snapshot.projectContextPromise) return snapshot.projectContextPromise;
+      const promise = (async () => {
+        while (!signal.aborted && data === snapshot) {
+          const ids = [...new Set([...snapshot.plans, ...snapshot.registered, ...snapshot.runs, ...snapshot.deployments].map(row => row.repository_id).filter(Boolean))].filter(id => !snapshot.contextRead.has(id));
+          if (!ids.length) return;
+          for (let offset = 0; offset < ids.length && !signal.aborted && data === snapshot; offset += 200) {
+            const page = ids.slice(offset, offset + 200);
+            try {
+              const result = await apiPage('project.context', { repository_ids: page });
+              if (signal.aborted || data !== snapshot) return;
+              for (const member of result.memberships || []) snapshot.memberships.set(member.repository_id, member);
+              page.forEach(id => snapshot.contextRead.add(id));
+            } catch (error) {
+              if (!['operation_unknown', 'permission_denied'].includes(error.code)) throw error;
+              page.forEach(id => snapshot.contextRead.add(id));
+            }
+          }
         }
-      }
+      })();
+      snapshot.projectContextSignal = signal;
+      snapshot.projectContextPromise = promise;
+      promise.then(
+        () => {
+          if (snapshot.projectContextPromise === promise) {
+            snapshot.projectContextPromise = null;
+            snapshot.projectContextSignal = null;
+          }
+        },
+        () => {
+          if (snapshot.projectContextPromise === promise) {
+            snapshot.projectContextPromise = null;
+            snapshot.projectContextSignal = null;
+          }
+        },
+      );
+      return promise;
+    }
+
+    function refreshProjectContext(signal, snapshot, onError = () => {
+      window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => window.DevCoordinatorI18n.t('shell.value1_repositories_unavailable_refresh_to_retry_426a76', { value1: window.DevCoordinatorI18n.t('common.projects_04e2a9') }));
+    }) {
+      return loadProjectContext(signal).then(() => {
+        if (signal.aborted || data !== snapshot) return;
+        rebuildCatalogue();
+        if (active) paint();
+      }).catch((error) => {
+        if (signal.aborted || data !== snapshot || error.code === 'stale') return;
+        snapshot.catalogueFailed = true;
+        onError(error);
+      });
     }
 
     async function continueCatalogue(signal) {
@@ -420,9 +457,13 @@ window.DevCoordinatorWorkspace = (() => {
         if (signal.aborted) return;
         if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
         data = { plans: plans.value?.headers || [], registered: repositoryList.value?.repositories || [], optional: [], presentations: new Map(), memberships: new Map(), contextRead: new Set(), runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [], nextRepositories: repositoryList.value?.next_repository_id, nextPlans: plans.value?.next_repository_id, catalogueFailed: !!plans.error || !!repositoryList.error };
-        await loadProjectContext(signal);
+        const snapshot = data;
         rebuildCatalogue();
         updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList]]);
+        void refreshProjectContext(signal, snapshot, (error) => {
+          const label = window.DevCoordinatorI18n.t('common.projects_04e2a9');
+          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList], [label, { error }]]);
+        });
         if (!canOperate()) return;
         // Navigation already has registered repository identities. Asking for
         // every repository's token totals here would claim the usage source
@@ -478,8 +519,9 @@ window.DevCoordinatorWorkspace = (() => {
         } catch (error) {
           if (error.code !== 'permission_denied') throw error;
         }
-        await loadProjectContext(signal);
+        const snapshot = data;
         rebuildCatalogue();
+        void refreshProjectContext(signal, snapshot);
       }
       if (['tests', 'deployments'].includes(view) && argument && !requested) {
         active = false; selectedId = ''; paint();
