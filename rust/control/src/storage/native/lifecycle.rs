@@ -63,7 +63,8 @@ impl GitProbe {
             return Err(blocked(GIT_PENDING));
         }
         self.used = true;
-        let result = if worktrees {
+        // Complete staged listings scale with tracked paths, like worktree lists.
+        let result = if worktrees || matches!(args, ["ls-files", "--stage", "-z"]) {
             git_bytes_with_stderr_limit(path, args, context, Some(WORKTREE_LIST_OUTPUT_LIMIT))
         } else {
             git_bytes_with_stderr(path, args, context)
