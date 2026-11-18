@@ -3,7 +3,7 @@ use super::*;
 use crate::events::{EventService, EventVisibility, NewEvent};
 use crate::request_deadline::{WaitContext, WaitDeadline};
 
-fn prepare(
+pub(super) fn prepare(
     fixture: &RouteWorld,
     id: &str,
     state: devcoordinator2_api::params::DeploymentWaitState,

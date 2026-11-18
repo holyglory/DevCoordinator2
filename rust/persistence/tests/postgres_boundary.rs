@@ -6,6 +6,256 @@ use devcoordinator2_persistence::{
 };
 use std::time::{Duration, Instant};
 
+fn origin_upgrade_fixture(cluster: &FixtureCluster, name: &str, prefix: i64) -> Persistence {
+    use devcoordinator2_persistence::schema::MIGRATIONS;
+    use sha2::{Digest, Sha256};
+    let database = Persistence::connect(&cluster.create_database(name).unwrap()).unwrap();
+    database.maintenance_transaction::<_,Error,_>(|tx|{
+        tx.execute_batch("CREATE TABLE dc2_schema_migrations(version BIGINT PRIMARY KEY,name TEXT NOT NULL,sha256 TEXT NOT NULL,applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())")?;
+        for (version,name,sql) in MIGRATIONS.iter().filter(|(version,_,_)|*version<=prefix) {
+            tx.execute_batch(sql)?;
+            let checksum=Sha256::digest(sql.as_bytes()).iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+            tx.execute("INSERT INTO dc2_schema_migrations(version,name,sha256) VALUES($1,$2,$3)",params![version,name,checksum])?;
+        }
+        tx.execute_batch("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('origin-a','/fixture/source-a','A','registered-a',1000,'seen-a'),('origin-b','/fixture/source-b','B','registered-b',1000,'seen-b');
+            INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('primary-a','origin-a','/fixture/source-a','registered-a','seen-a'),('primary-b','origin-b','/fixture/source-b','registered-b','seen-b');
+            INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('deployment-a','origin-a','primary-a','A','checkout','fixture','{}','stopped','deployment-a-created',1000,'fixture','deployment-a-updated'),('deployment-b','origin-b','primary-b','B','checkout','fixture','{}','stopped','deployment-b-created',1000,'fixture','deployment-b-updated')")?;
+        Ok(())
+    }).unwrap();
+    database
+}
+
+fn legacy_origin(
+    connection: &devcoordinator2_persistence::Connection,
+    deployment: &str,
+    number: i64,
+    worktree: &str,
+    path: &str,
+    created: &str,
+) -> Result<()> {
+    connection.execute("INSERT INTO generations(deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state) VALUES($1,$2,'preserved-commit',0,$3,'preserved-fingerprint',$4,'historical')",params![deployment,number,format!("/fixture/generation-{deployment}-{number}"),created])?;
+    connection.execute("INSERT INTO generation_source_origins(deployment_id,number,worktree_id,path) VALUES($1,$2,$3,$4)",params![deployment,number,worktree,path])?;
+    Ok(())
+}
+
+fn origin_history(database: &Persistence) -> serde_json::Value {
+    database.read::<_,Error,_>(|c|c.query_row("SELECT jsonb_build_object('origins',(SELECT jsonb_agg(to_jsonb(o) ORDER BY deployment_id,number) FROM generation_source_origins o),'generations',(SELECT jsonb_agg(to_jsonb(g) ORDER BY deployment_id,number) FROM generations g),'deployments',(SELECT jsonb_agg(to_jsonb(d) ORDER BY deployment_id) FROM deployments d))",[],|row|row.get(0))).unwrap()
+}
+
+fn worktree_rows(database: &Persistence) -> serde_json::Value {
+    database
+        .read::<_, Error, _>(|c| {
+            c.query_row(
+                "SELECT jsonb_agg(to_jsonb(w) ORDER BY worktree_id) FROM worktrees w",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .unwrap()
+}
+
+fn migration_refusal(error: &Error) -> Option<&str> {
+    match error {
+        Error::Postgres(error) => error
+            .as_db_error()
+            .filter(|error| error.code() == &postgres::error::SqlState::CHECK_VIOLATION)
+            .map(|error| error.message()),
+        _ => None,
+    }
+}
+
+#[test]
+fn legacy_candidate_origins_backfill_stable_ids_without_rewriting_history() {
+    let cluster = FixtureCluster::start().unwrap();
+    // This is the actual live schema35 migration prefix, before any Explorer
+    // tables or native registration bindings existed.
+    let database = origin_upgrade_fixture(&cluster, "origin_backfill", 16);
+    database.write::<_,Error,_>(|c|{
+        legacy_origin(c,"deployment-a",1,"w1111111111111111","/fixture/candidate-a","2026-11-16T12:00:00Z")?;
+        legacy_origin(c,"deployment-a",2,"w1111111111111111","/fixture/candidate-a","2026-11-17T12:00:00Z")?;
+        c.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('registered-source','origin-a','/fixture/registered','keep-registration','keep-last-seen')",[])?;
+        legacy_origin(c,"deployment-a",3,"registered-source","/fixture/registered","2026-11-17T13:00:00Z")?;
+        Ok(())
+    }).unwrap();
+    let history = origin_history(&database);
+    let existing = worktree_rows(&database);
+    database.migrate().unwrap();
+    assert_eq!(origin_history(&database), history);
+    database.read::<_,Error,_>(|c|{
+        let row=c.query_row("SELECT repository_id,worktree_path,registered_at,last_seen_at FROM worktrees WHERE worktree_id='w1111111111111111'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)))?;
+        assert_eq!(row,("origin-a".into(),"/fixture/candidate-a".into(),"2026-11-16T12:00:00Z".into(),"2026-11-17T12:00:00Z".into()));
+        let unchanged:serde_json::Value=c.query_row("SELECT jsonb_agg(to_jsonb(w) ORDER BY worktree_id) FROM worktrees w WHERE worktree_id<>'w1111111111111111'",[],|row|row.get(0))?;
+        assert_eq!(unchanged,existing,"existing registration IDs, paths, timestamps and row identities are preserved");
+        assert_eq!(c.query_row("SELECT count(*) FROM worktree_native_identities",[],|row|row.get::<_,i64>(0))?,0,"SQL backfill never grants native identity proof");
+        assert_eq!(c.query_row("SELECT count(*) FROM repository_native_identities",[],|row|row.get::<_,i64>(0))?,0);
+        assert_eq!(c.query_row("SELECT value FROM meta WHERE key='schema_version'",[],|row|row.get::<_,String>(0))?,devcoordinator2_persistence::schema::DATABASE_SCHEMA_VERSION.to_string());
+        Ok(())
+    }).unwrap();
+    let after = worktree_rows(&database);
+    database.migrate().unwrap();
+    assert_eq!(
+        worktree_rows(&database),
+        after,
+        "repeated migration cannot allocate a fresh ID or registration row"
+    );
+    assert_eq!(origin_history(&database), history);
+}
+
+#[test]
+fn legacy_candidate_origins_refuse_collisions_and_rollback_the_upgrade() {
+    let cluster = FixtureCluster::start().unwrap();
+    let cases = [
+        (
+            "origin_owner_collision",
+            "owner",
+            "legacy candidate origin identity has conflicting repository ownership",
+        ),
+        (
+            "origin_path_collision",
+            "path",
+            "legacy candidate origin path has conflicting source identities",
+        ),
+        (
+            "origin_ambiguous_paths",
+            "paths",
+            "unregistered legacy candidate origin has ambiguous source paths",
+        ),
+        (
+            "origin_registered_owner",
+            "registered-owner",
+            "candidate origin conflicts with its registered source or committed relocation",
+        ),
+        (
+            "origin_registered_path",
+            "registered-path",
+            "candidate origin conflicts with its registered source or committed relocation",
+        ),
+        (
+            "origin_claimed_path",
+            "claimed-path",
+            "candidate origin path is already owned by another registered source",
+        ),
+        (
+            "origin_invalid_id",
+            "invalid-id",
+            "unregistered candidate origin identity is not a legacy producer identity",
+        ),
+        (
+            "origin_foreign_root",
+            "foreign-root",
+            "candidate origin path is already owned by another registered source",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case, expected) in cases {
+        let database = origin_upgrade_fixture(&cluster, name, 16);
+        database.write::<_,Error,_>(|c|{
+            match case {
+                "owner"=>{
+                    legacy_origin(c,"deployment-a",1,"w1111111111111111","/fixture/candidate-a","t")?;
+                    legacy_origin(c,"deployment-b",1,"w1111111111111111","/fixture/candidate-b","t")?;
+                },
+                "path"=>{
+                    legacy_origin(c,"deployment-a",1,"w1111111111111111","/fixture/candidate-a","t")?;
+                    legacy_origin(c,"deployment-a",2,"w2222222222222222","/fixture/candidate-a","t")?;
+                },
+                "paths"=>{
+                    legacy_origin(c,"deployment-a",1,"w1111111111111111","/fixture/candidate-a","t")?;
+                    legacy_origin(c,"deployment-a",2,"w1111111111111111","/fixture/candidate-b","t")?;
+                },
+                "registered-owner"=>legacy_origin(c,"deployment-b",1,"primary-a","/fixture/source-a","t")?,
+                "registered-path"=>legacy_origin(c,"deployment-a",1,"primary-a","/fixture/candidate-a","t")?,
+                "claimed-path"=>legacy_origin(c,"deployment-a",1,"w1111111111111111","/fixture/source-a","t")?,
+                "invalid-id"=>legacy_origin(c,"deployment-a",1,"unregistered-source","/fixture/candidate-a","t")?,
+                "foreign-root"=>{
+                    c.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('origin-c','/fixture/foreign-root','C','t',1000,'t')",[])?;
+                    legacy_origin(c,"deployment-a",1,"w1111111111111111","/fixture/foreign-root","t")?;
+                },
+                _=>unreachable!(),
+            }
+            Ok(())
+        }).unwrap();
+        let history = origin_history(&database);
+        let registrations = worktree_rows(&database);
+        match database.migrate() {
+            Err(error) if migration_refusal(&error) == Some(expected) => {}
+            Err(_) => failures.push(format!("{case}: unexpected migration refusal")),
+            Ok(()) => failures.push(format!("{case}: ambiguous provenance was accepted")),
+        }
+        if worktree_rows(&database) != registrations || origin_history(&database) != history {
+            failures.push(format!(
+                "{case}: failed upgrade changed protected authority"
+            ));
+        }
+        let (version,migration):(String,i64)=database.read::<_,Error,_>(|c|c.query_row("SELECT (SELECT value FROM meta WHERE key='schema_version'),(SELECT max(version) FROM dc2_schema_migrations)",[],|row|Ok((row.get(0)?,row.get(1)?)))).unwrap();
+        if version != "35" || migration != 16 {
+            failures.push(format!(
+                "{case}: failed upgrade was not rolled back to the exact schema35 prefix"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+#[test]
+fn legacy_candidate_origins_preserve_only_committed_relocation_aliases() {
+    let cluster = FixtureCluster::start().unwrap();
+    for (name, state) in [
+        ("origin_committed_alias", "committed"),
+        ("origin_uncommitted_alias", "verified"),
+    ] {
+        // Relocation history first exists after the old live prefix. Exercise
+        // its already deployed rows without changing any applied SQL checksum.
+        let database = origin_upgrade_fixture(&cluster, name, 20);
+        database.write::<_,Error,_>(|c|{
+            c.execute_batch("INSERT INTO projects(project_id,name,slug,created_at,updated_at,updated_by) VALUES('origin-project','Origin','origin','t','t','fixture');
+                INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('registered-source','origin-a','/fixture/current-source','keep-registration','keep-last-seen')")?;
+            for (id,old,new) in [("origin-move-1","/fixture/old-source","/fixture/middle-source"),("origin-move-2","/fixture/middle-source","/fixture/current-source")] {
+                c.execute("INSERT INTO repository_relocations(relocation_id,project_id,repository_id,worktree_id,old_path,new_path,moves_repository_root,idempotency_key,request_json,fingerprint,native_json,state,checkout_revision,actor_uid,prepared_at,verified_at,committed_at) VALUES($1,'origin-project','origin-a','registered-source',$2,$3,false,$1,'{}',repeat('a',64),'{}',$4,1,1000,'prepared','verified',$5)",params![id,old,new,if id=="origin-move-1"{state}else{"committed"},(id!="origin-move-1"||state=="committed").then_some("committed")])?;
+                c.execute("INSERT INTO registry_path_aliases(old_path,repository_id,worktree_id,new_path,relocation_id,created_at) VALUES($1,'origin-a','registered-source',$2,$3,'t')",params![old,new,id])?;
+            }
+            legacy_origin(c,"deployment-a",1,"registered-source","/fixture/old-source","first-generation")?;
+            legacy_origin(c,"deployment-a",2,"registered-source","/fixture/middle-source","second-generation")?;
+            Ok(())
+        }).unwrap();
+        let registrations = worktree_rows(&database);
+        let history = origin_history(&database);
+        let aliases = database
+            .read::<_, Error, _>(|c| {
+                c.query_row(
+                    "SELECT jsonb_agg(to_jsonb(a) ORDER BY old_path) FROM registry_path_aliases a",
+                    [],
+                    |row| row.get::<_, serde_json::Value>(0),
+                )
+            })
+            .unwrap();
+        let result = database.migrate();
+        if state == "committed" {
+            result.unwrap();
+            database.migrate().unwrap();
+        } else {
+            assert_eq!(
+                migration_refusal(&result.unwrap_err()),
+                Some(
+                    "candidate origin conflicts with its registered source or committed relocation"
+                )
+            );
+        }
+        assert_eq!(worktree_rows(&database), registrations);
+        assert_eq!(origin_history(&database), history);
+        assert_eq!(
+            database
+                .read::<_, Error, _>(|c| c.query_row(
+                    "SELECT jsonb_agg(to_jsonb(a) ORDER BY old_path) FROM registry_path_aliases a",
+                    [],
+                    |row| row.get::<_, serde_json::Value>(0)
+                ))
+                .unwrap(),
+            aliases
+        );
+    }
+}
+
 fn request_index_upgrade_preserves_native_rows(cluster: &FixtureCluster) {
     use devcoordinator2_persistence::schema::MIGRATIONS;
     use sha2::{Digest, Sha256};

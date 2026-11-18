@@ -11,6 +11,16 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
   `origin/main`. Fetch before consequential repository-wide work.
 - Develop in a separate linked worktree and merge through Git. Never stash,
   reset, clean, rebase, or develop directly in the live checkout.
+- New feature branches have a recorded intent, linked outcome and responsible
+  owner in the Coordinator project registry. Finish each coherent increment
+  through a squash-merged pull request; record the original head and resulting
+  main commit. Verify remote integration before retiring the exact local
+  worktree and local/GitHub feature refs. Do not retain whole-checkout archives.
+- Keep project copies and their build outputs under the declared source/build
+  roots once that project has migrated. Until its explicit migration, retain
+  known locations and account for them; do not independently move a live or
+  shared checkout. The canonical path below changes only through the reviewed
+  project migration and installer workflow.
 - A dirty, stale, non-main, or non-fast-forward live checkout blocks service
   restart and readiness.
 

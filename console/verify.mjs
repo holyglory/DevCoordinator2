@@ -1315,7 +1315,14 @@ async function main() {
         // Holding an arbitrary earlier request measured a different loading state.
         if (scenario.delayMs) await isolateScenario(page, daemon, { ...scenario, delayExceptOperations: ['user.whoami'], ...(delayedOperations ? { delayOperations: delayedOperations } : {}) });
         const callsBeforeNavigation = daemon.calls.length;
-        const scopedView = ['#/deployments', '#/tests'].includes(view) ? `${view}?repository=${REPO}` : ['#/plan', '#/progress', '#/usage', '#/decisions'].includes(view) ? `${view}/${REPO}` : view;
+        let scopedView = ['#/deployments', '#/tests'].includes(view) ? `${view}?repository=${REPO}` : ['#/plan', '#/progress', '#/usage', '#/decisions'].includes(view) ? `${view}/${REPO}` : view;
+        if (view.startsWith('#/performance/')) {
+          // Performance pins its time window with replaceState before reading.
+          // Supply that same exact scope so the current-document request guard
+          // continues to distinguish this navigation from an earlier document.
+          const end = Date.now();
+          scopedView += `?${new URLSearchParams({ range: '7d', from: String(end - 7 * 86400000), to: String(end), recordedTo: String(end) })}`;
+        }
         const targetUrl = `http://${HOST}:${port}/${scopedView}`;
         const loadingRequest = scenario.delayMs ? page.waitForRequest(request => currentDocumentRequest(request, page, targetUrl, delayedOperations), { timeout: 30000 }) : null;
         loadingRequest?.catch(() => {}); // Navigation failure must not leave an unobserved wait rejection.
@@ -3036,9 +3043,9 @@ async function main() {
     && await navPage.locator('#nav:visible').count() === 0);
   await navPage.click('#nav-toggle');
   await navPage.waitForSelector('#nav:visible');
-  check('interaction: hamburger opens the original navigation links in a DOM menu',
+  check('interaction: hamburger opens the project and host navigation links in a DOM menu',
     await navPage.locator('#nav-toggle[aria-expanded="true"]').count() === 1
-    && await navPage.locator('#nav a[href="#/plan"]').count() === 1
+    && await navPage.locator('#nav a[href="#/projects"]').count() === 1
     && await navPage.locator('#nav a[href="#/health"]').count() === 1
     && await navPage.locator('#nav button').count() === 0);
   await navPage.screenshot({ path: path.join(OUT, 'navigation-799-open.png'), fullPage: true });

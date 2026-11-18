@@ -1082,6 +1082,142 @@ Fresh formal run `formal-web-ui-mwkjxlhj-654eff6a` passed all 210 required cells
 
 The approved image was compared with current dark 1975×796 captures for pending usage, measured headlines awaiting rich data, and lifetime details. The comparison is retained in `/mnt/build-storage/codex/console-usage-83-20261116/product-design-audit-prefetch-lifetime-fixture.json`. Its fixture comparison passed; its final result remains incomplete until shared live comparison and actual browser/data acceptance pass on the installed candidate. The preliminary real-API trace with candidate assets showed 450–560 ms visible totals, but is explicitly not deployed acceptance. Runtime receipts and the Coordinator outcome retain the final delivery status; this source entry does not convert a preliminary check into completion.
 
+# Project Explorer design QA — 2026-11-17
+
+final result: blocked
+
+The integrated fixture supports inspecting linked branches and copies, editing
+metadata, and reviewing removal. Formal checks and complete screenshot review
+pass in both themes, with real persistence and cleanup exercised by the native
+browser journey. The 2026-11-18 evidence remains limited to that fixture. Shared
+Console formal/manual verification, Product Design audit, live source-identity
+verification, and qualified delivery remain pending; a confirmed host readiness
+race also blocks release. Handoff is preliminary and incomplete.
+
+Release correction: the earlier handoff claim remains invalid. The previous
+manual decisions were generated for all cells without inspecting every required
+screenshot pair, and the Product Design
+pass lacked the paired source/rendered comparison and shared live preview.
+Those receipts do not establish manual review, design approval or delivery.
+Coordinator decision `DC2-PROJECT-EXPLORER-RELEASE-EVIDENCE-CORRECTION-20261117`
+records the correction. The replacement fixture evidence below does not
+rehabilitate those receipts; unrelated earlier audits above remain untouched.
+
+## Source and implementation
+
+- Source visual truth: `.devcoordinator/project-explorer-design/relationships-fd27a5530c2f.png`, Coordinator-selected option 3 `s3ab8fce40b07f39e`, resolved revision 2, 1487 × 1058 px, dark populated Copies state.
+- Source image SHA-256: `fd27a5530c2faba0f78c4f95920b209085fbb6eeb9ca575236a11933f338a552`.
+- Integrated fixture candidate: `b536607`; PR 96 remains unmerged. The subsequent backend readiness repair is in progress and is not qualified by these receipts.
+- Current formal source digest: `28dec0659f3a88a4e1e3e14cb45d9e4b75135d197b72ac1832b13398a6606815`. This binds declared UI inputs and observed fixture source bindings, not the complete repository or live deployment.
+- Retained evidence bundle: `project-explorer-release-20261117.6a7KuD`. Its `browser-integration-formal-repeat` subtree contains the current light/dark reports, review queues, and screenshot pairs. Earlier bundles remain historical. Cold evidence remains private; only bounded identities are recorded here.
+
+## Incumbent design and scope
+
+This is an Operate surface extending the existing Console. `PRODUCT.md` pins
+Inter typography, semantic light/dark colors, and bundled Tabler icons.
+`console/project-explorer.css` inherits the font and consumes the existing
+background, panel, text, border, accent, status, and shadow tokens from
+`console/design-system.css`; it introduces no separate palette or typography
+system. Shared buttons, fields, focus treatments, and dialogs retain their
+Console styling.
+
+The selected composition links the GitHub and local source/build trees, with
+branch/copy details below. At desktop widths the trees have bounded scroll
+panes; narrower layouts stack them in document flow, and the project rail
+becomes a drawer. The mobile Storage correction keeps the caption full width
+and places Source/Builds labels beside each amount. These are Explorer-specific
+layout rules, not new system-wide conventions. No unrelated design-system
+change was made.
+
+Impeccable context reports no root `DESIGN.md`. That is pre-existing
+documentation drift; the incumbent CSS and product brief remain the visual
+context. This handoff does not create or refresh `DESIGN.md`, a token sidecar,
+or global design rules.
+
+## Verified fixture journeys
+
+1. **Inspect project branches and copies.** The native browser journey verifies explicit project membership, actual branch/copy relationships, navigation to Plan, and selection/search preservation during refresh.
+2. **Inspect metadata and ancestry.** Stored descriptions and commit disclosure come from the real fixture API and Git history. Storage keeps missing measurements explicit; History records actual metadata changes.
+3. **Edit and reload.** Metadata persists after reload, concurrent edits cannot silently overwrite intent, and operator/viewer access is exercised. The phone journey reaches Save and Cancel, verifies the saved value, and preserves cancellation behavior.
+4. **Review and execute removal.** Primary copies remain protected; reloading a pending review restores one dialog and one job. The journey actually removes a remotely preserved temporary checkout and requires the displayed explicit administrator approval before removing dirty local data.
+5. **Navigate and read across sizes.** Keyboard tree navigation keeps selection accessible, including scrolling within the bounded panes. The native journey checks both themes at 390, 760, 1050, 1440 and 1487 CSS pixels and reports no browser exceptions.
+6. **Review every declared visual cell.** Fresh integrated formal and manual receipts pass 92/92 cells per theme. Independent agents opened all 184 initial/full-page pairs: 368 images, with individually authored observations and no carried decisions. Coverage includes Copies, commit disclosure, editing, removal, Branches, Overview, Storage and History, with declared widths from 390 to 1920 pixels and breakpoint-edge samples.
+
+These are fixture verification results, not a completed Product Design audit.
+The final manual reviews report no remaining P0-P2 finding within their
+reviewed cells. The selected dark mockup does not establish a light-theme
+comparison target or references for states it does not depict.
+
+## Iteration history
+
+- Earlier formal candidates retain their diagnostic history: missing authentication/source binding, off-screen commit continuation anchors, and a transient timing sample. Subsequent changes added current/rollback generation rows, queued removal review, and the duplicate-dialog guard. Those automated results cover their exact candidates only.
+- The earlier `project-explorer-formal-final2-20261117` manual and Product Design pass claims remain invalidated by the correction above. The old 23-check browser report does not replace the current native journey.
+- Actual screenshot review then found a P2 phone Storage defect in both themes: a word-wide caption and amounts without visible Source/Builds labels. `browser-mobile-repro/report.json` reproduced the affected check failing, with 29/30 checks passed.
+- Commit `36a6246` repaired the caption and labels, corrected the unmeasured-items wording, and extended the native journey for phone Storage, keyboard scrolling, and phone Save/Cancel. `browser-mobile-fixed/report.json` passes all 30 checks, including the original failing check.
+- The complete formal matrix was rerun after that repair. Reviewers opened every new initial/full-page pair; the light and dark iteration-2 notes explicitly resolve the Storage P2 findings. Both finalized manual receipts pass all 92 cells, with zero carried decisions or review gaps.
+- The integrated `b536607` fixture was then checked afresh. `browser-integration-formal-repeat` passes 31 native browser checks and the full 92-cell formal matrix in each theme. Separate `manual-light-integration.json` and `manual-dark-integration.json` receipts bind all newly inspected pairs to those exact formal runs; the earlier repaired-candidate receipts are retained as history.
+
+## Evidence
+
+All current references below belong to `project-explorer-release-20261117.6a7KuD`.
+
+| Evidence | Identity | Verified result |
+| --- | --- | --- |
+| Light formal | `formal-web-ui-mwlhizp6-b18463ae`; `browser-integration-formal-repeat/formal-light/receipt.json` | `formal.result: passed`; fresh complete 92/92; readiness-eligible within the declared UI scope |
+| Dark formal | `formal-web-ui-mwlhnbqj-f2005008`; `browser-integration-formal-repeat/formal-dark/receipt.json` | `formal.result: passed`; fresh complete 92/92; readiness-eligible within the declared UI scope |
+| Light manual | `manual-light-integration.json`, finalized 2026-11-18 02:29:03 UTC | `manual.result: passed`; 92/92 newly inspected screenshot pairs, bound to the light formal run |
+| Dark manual | `manual-dark-integration.json`, finalized 2026-11-18 02:28:52 UTC | `manual.result: passed`; 92/92 newly inspected screenshot pairs, bound to the dark formal run |
+| Native browser | `browser-integration-formal-repeat/report.json` | 31/31 checks, including persistence, actual cleanup, explicit data-loss approval, keyboard scrolling, and phone Save/Cancel |
+
+The review queues and manual receipts retain the exact cell, state, theme,
+viewport, screenshot hashes, notes, and timestamps. Iteration findings remain
+in `manual-light-a-iteration2.review-notes.json`,
+`manual-light-b-iteration2.notes.json`, and `manual-dark-iteration2.notes.json`,
+alongside the earlier failed-review artifacts. Current observations are in
+`manual-light-integration.notes.json` and `manual-dark-integration.notes.json`.
+
+Supporting integrated checks passed: Performance 1,487/1,487
+(`performance-integration/report.json`), cache 173/173
+(`cache-integration/report.json`), Rust workspace 1,027 passed and 31 ignored
+(`workspace-integration-final-receipt.json`), and skills 23/23
+(`skills-20261118T021828Z-3857950-d47bb7/check-report.json`). These results do
+not establish complete host or release acceptance.
+
+`paired-fidelity-integration.json` records only a preliminary isolated paired
+observation of the selected dark mockup and the integrated fixture at
+1487 × 1058, with commits expanded. It preserves the comparison and its limits;
+it is not the required Product Design audit on the shared Console.
+
+## Evidence limits and remaining handoff
+
+The native journey uses a real backend and disposable Git/filesystem fixtures;
+it does not prove the shared live deployment or the live GitHub provider.
+Formal captures mask native field values and account details. Some tree rows
+and phone editor buttons lie beyond a current scroll viewport; their
+reachability and behavior are established by the separate native journey,
+not by claiming those controls appear in every screenshot. No full
+assistive-technology conformance claim is made.
+
+Host acceptance remains incomplete: the full run passed 61/63 and the targeted
+rerun passed 2/2 (`root-integration-report.json`,
+`root-integration-targeted-report.json`, and
+`root-integration-composite-receipt.json`). This is not one complete 63-case
+pass. The original failure exposed a confirmed race where a restarted process
+could reuse old healthy status before its HTTP listener accepted connections;
+the targeted success does not invalidate that finding. Backend repair and a
+deterministic regression are underway under outcome `p4e4cea8df44ff405` and
+decision `n831aa867ed48fb6e`
+(`DC2-RECOVERY-HTTP-READINESS-FRESHNESS-20261118`).
+
+The integration owner must finish that repair and required release checks before
+merge and activation. The shared Console then needs its own formal pass,
+complete manual review, and Product Design audit against the current selected
+sketch with paired source/rendered evidence under matching conditions. Those
+gates must pass before live deployment/source-identity verification and the
+qualified delivery receipt can complete handoff. The existing Coordinator outcomes
+`pa247566084de30d6` and `p3f7e41c32deab9a5` remain authoritative for that work;
+this report records evidence, not completion or design approval.
+
 ## Performance compact command and summary band — 2026-11-18
 
 The selected continuation is sketch s5f8db40349080d73, revision 9, surface console-performance-loading, with source image SHA-256 6036cb9537165f7244fb10688a8f1d2478832682259077790fe3ca524bdc8dc2. The source is one dark settled Performance window at 1523×1033: controls and four summary metrics share an approximately 80px band, followed immediately by the date/status line, distribution panels, and activity table.

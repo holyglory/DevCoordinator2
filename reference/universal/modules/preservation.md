@@ -16,6 +16,30 @@
   nested-repository references. Preserve useful unfinished work and rollback
   identities; remove only verified obsolete artifacts with exact-target
   receipts. An old name or timestamp alone is not proof of disposability.
+- Where the Coordinator project lifecycle is configured, resolve explicit
+  project/source ownership and declared source/build roots before creating a
+  branch, worktree, clone or large generated directory. Reuse the current
+  task's appropriate working copy across sessions. Record branch intent,
+  outcome, responsible owner and next action; keep human progress distinct
+  from observed dirty, remote-preserved and integrated states.
+- Keep active copies claimed while they are needed. Commit and verify pushed
+  checkpoints before handoff or parking when publication is authorized.
+  A missing heartbeat prompts inspection or transfer; it never proves that
+  unpublished work is disposable. Apply the project's merge policy; when
+  squash integration is required, retain the original feature head, pull
+  request and resulting integration commit rather than relying on ancestry.
+- After verified integration, finish the recorded closeout: release consumers,
+  retain required evidence independently, remove disposable local checkouts,
+  branches and owned outputs through the lifecycle operation, and verify
+  absence. Delete remote feature refs only under the project's confirmed
+  retention policy. Keep compact history, not whole-checkout archives. Local
+  removal of a remotely preserved parked copy does not finish its outcome.
+- For potential loss of dirty edits, unpublished refs, stashes or valuable
+  local-only files, prepare the exact removal plan and obtain explicit user
+  consent for its listed effect. Bind consent to the observed target/content;
+  changed contents require review again. The trusted agent records the real
+  user decision, never fabricates consent or treats a force flag as consent.
+  Unrelated open project tasks do not prevent removal of a safe finished copy.
 - Treat canonical sources as the only writable truth. Update installed,
   generated, mirrored, or derived copies through their verified source
   workflow.

@@ -31,6 +31,36 @@ pub(crate) fn protected_metadata_name(name: &std::ffi::OsStr) -> bool {
     )
 }
 
+/// Reuse the existing ignored-file review scope for checkout removal. Parent
+/// directories of allowed metadata remain traversable; retained logs, chat
+/// histories and other data are protected. The root Git store is separately
+/// reviewed through every ref/stash before an independent clone is removed.
+pub(crate) fn checkout_entry_protected(relative: &std::path::Path, is_directory: bool) -> bool {
+    use std::path::Component;
+    let components = relative.components().collect::<Vec<_>>();
+    if components
+        .first()
+        .is_some_and(|part| matches!(part,Component::Normal(name) if *name==".git"))
+    {
+        return false;
+    }
+    let metadata = components
+        .iter()
+        .position(|part| matches!(part,Component::Normal(name) if *name==".devcoordinator"));
+    let scoped = metadata
+        .map(|index| components[index..].iter().collect::<std::path::PathBuf>())
+        .unwrap_or_else(|| relative.to_path_buf());
+    if is_directory
+        && matches!(
+            scoped.to_str(),
+            Some(".devcoordinator" | ".devcoordinator/test" | ".devcoordinator/test/current")
+        )
+    {
+        return false;
+    }
+    !super::native::HostBackend::ignored_review_path_allowed(&scoped)
+}
+
 #[cfg(target_os = "linux")]
 #[path = "fs_linux.rs"]
 mod platform;

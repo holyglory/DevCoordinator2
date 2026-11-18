@@ -76,6 +76,7 @@ pub struct ControlPlane {
     usage: UsageService,
     rate_cards: crate::rate_card::RateCardService,
     progress: ProgressService,
+    project: crate::project::ProjectService,
     telegram: TelegramService,
     agent_routing: crate::agent_routing::AgentRoutingService,
     agent_hub: crate::agent_hub::AgentHubService,
@@ -85,6 +86,16 @@ pub struct ControlPlane {
 impl ControlPlane {
     pub fn storage(&self) -> &crate::storage::StorageService {
         &self.storage
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    pub fn with_fixture_storage_backend(
+        mut self,
+        backend: Arc<dyn crate::storage::native::Backend>,
+    ) -> Self {
+        self.storage = self.storage.clone().with_fixture_backend(backend);
+        self.project = self.project.clone().with_storage(self.storage.clone());
+        self
     }
 
     pub fn database(&self) -> &Database {
@@ -162,6 +173,16 @@ impl ControlPlane {
             usage.usage().clone(),
             Arc::clone(&clock),
         );
+        let project = crate::project::ProjectService::new(database.clone(), registry.clone())
+            .with_storage(storage.clone())
+            .with_access(access.clone())
+            .with_events(events.clone());
+        let project = match crate::project::github::GithubClient::new(
+            config.secrets_dir().join("github.token"),
+        ) {
+            Ok(github) => project.with_github(github),
+            Err(_) => project,
+        };
         let reviews = crate::review::ReviewService::new(database.clone(), usage.clone());
         let deliveries = crate::delivery::DeliveryService::new(
             database.clone(),
@@ -284,6 +305,7 @@ impl ControlPlane {
             usage,
             rate_cards,
             progress,
+            project,
             telegram,
             agent_routing,
             agent_hub,
@@ -313,6 +335,10 @@ impl ControlPlane {
 
     pub fn progress(&self) -> &ProgressService {
         &self.progress
+    }
+
+    pub fn project(&self) -> &crate::project::ProjectService {
+        &self.project
     }
 
     pub fn logs(&self) -> &TestLogService {
@@ -1167,6 +1193,36 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
                 );
                 Ok(result)
             };
+    ProjectList => self.project.list(params, caller);
+    ProjectStatus => self.project.status(params, caller);
+    ProjectContext => self.project.context(params, caller);
+    ProjectConfigure => self.project.configure(params, caller);
+    ProjectBranchList => self.project.branches(params, caller);
+    ProjectBranchGet => self.project.branch(params, caller);
+    ProjectCheckoutList => self.project.checkouts(params, caller);
+    ProjectCheckoutGet => self.project.checkout(params, caller);
+    ProjectHistory => self.project.history(params, caller);
+    ProjectBranchCommits => self.project.commits(params, caller);
+    ProjectBranchCommitsRefresh => self.project.refresh_commits_page(params, caller);
+    ProjectBranchUpdate => self.project.update_branch(params, caller);
+    ProjectBranchRetire => self.project.retire_branch(params, caller);
+    ProjectCheckoutUpdate => self.project.update_checkout(params, caller);
+    ProjectRefresh => self.project.refresh(params, caller);
+    ProjectJobStatus => self.project.job(params, caller);
+    ProjectCheckoutRemovePlan => self.project.checkout_remove_plan(params, caller);
+    ProjectCheckoutRemovePlanStatus => self.project.checkout_remove_plan_status(params, caller);
+    ProjectCheckoutRemovePlanCancel => self.project.checkout_remove_plan_cancel(params, caller);
+    ProjectCheckoutRemoveApprove => self.project.checkout_remove_approve(params, caller);
+    ProjectCheckoutRemoveStart => self.project.checkout_remove_start(params, caller);
+    ProjectCheckoutRemoveJob => self.project.checkout_remove_job(params, caller);
+    ProjectCheckoutRemoveCancel => self.project.checkout_remove_cancel(params, caller);
+    ProjectCheckoutArtifactList => self.project.artifact_associations(params, caller);
+    ProjectCheckoutArtifactAdopt => self.project.adopt_artifact(params, caller);
+    ProjectCheckoutArtifactDetach => self.project.detach_artifact(params, caller);
+    ProjectCheckoutRelocatePrepare => self.registry.relocate_prepare(params, caller);
+    ProjectCheckoutRelocateVerify => self.registry.relocate_verify(params, caller);
+    ProjectCheckoutRelocateCommit => self.registry.relocate_commit(params, caller);
+    ProjectCheckoutRelocateCancel => self.registry.relocate_cancel(params, caller);
     ServerRegister => self.servers.register(params);
     ServerList => self.servers.list(params);
     ServerStop => self.servers.stop(params);

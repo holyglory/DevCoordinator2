@@ -251,7 +251,7 @@ function setupMenu() {
     else paintMenu();
   });
 }
-const routes = { plan: ['plan'], progress: ['progress'], performance: ['performance'], usage: ['usage'], deployments: ['deployments'], tests: ['tests', 'evidence', 'artifacts'], sketches: ['sketches', 'evidence'], glossary: ['glossary'], health: ['health'], bugs: ['bugs'], admin: ['admin'] };
+const routes = { projects: ['projects'], plan: ['plan'], progress: ['progress'], performance: ['performance'], usage: ['usage'], deployments: ['deployments'], tests: ['tests', 'evidence', 'artifacts'], sketches: ['sketches', 'evidence'], glossary: ['glossary'], health: ['health'], bugs: ['bugs'], admin: ['admin'] };
 i18n.route = async () => i18n.ensure(...(routes[location.hash.slice(2).split(/[/?]/)[0]] || ['plan']));
 i18n.ready = (async () => {
   manifest = await read('manifest.json'); catalog = createCatalog(manifest, read);

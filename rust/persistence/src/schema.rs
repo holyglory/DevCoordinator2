@@ -4,7 +4,7 @@ use crate::{Error, Persistence, Result};
 use sha2::{Digest, Sha256};
 
 pub const LEGACY_SCHEMA_VERSION: u32 = 34;
-pub const DATABASE_SCHEMA_VERSION: u32 = 35;
+pub const DATABASE_SCHEMA_VERSION: u32 = 39;
 pub const MIGRATIONS: &[(i64, &str, &str)] = &[
     (
         1,
@@ -85,6 +85,31 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         16,
         "usage_operation_contexts",
         include_str!("../migrations/0016_usage_operation_contexts.sql"),
+    ),
+    (
+        17,
+        "project_explorer",
+        include_str!("../migrations/0017_project_explorer.sql"),
+    ),
+    (
+        18,
+        "repository_relocation",
+        include_str!("../migrations/0018_repository_relocation.sql"),
+    ),
+    (
+        19,
+        "project_checkout_artifacts",
+        include_str!("../migrations/0019_project_checkout_artifacts.sql"),
+    ),
+    (
+        20,
+        "relocation_consumers",
+        include_str!("../migrations/0020_relocation_consumers.sql"),
+    ),
+    (
+        21,
+        "legacy_generation_origin_worktrees",
+        include_str!("../migrations/0021_legacy_generation_origin_worktrees.sql"),
     ),
 ];
 

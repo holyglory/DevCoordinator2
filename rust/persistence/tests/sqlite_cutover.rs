@@ -81,6 +81,41 @@ fn full_schema_copy_preserves_ids_history_json_numbers_blobs_and_restart() {
     let cluster = FixtureCluster::start().unwrap();
     let config = cluster.create_database("cutover").unwrap();
     let database = Persistence::connect(&config).unwrap();
+    for (name, sql) in [
+        (
+            "changed_version",
+            "UPDATE meta SET value='0' WHERE key='schema_version'",
+        ),
+        (
+            "changed_default",
+            "UPDATE meta SET value='changed' WHERE key<>'schema_version'",
+        ),
+        (
+            "changed_default_identity",
+            "UPDATE meta SET rowid=rowid+100 WHERE key<>'schema_version'",
+        ),
+    ] {
+        let changed = Persistence::connect(&cluster.create_database(name).unwrap()).unwrap();
+        changed.migrate().unwrap();
+        changed
+            .write::<_, Error, _>(|c| c.execute_batch(sql))
+            .unwrap();
+        let error = import_sqlite(&changed, &path).unwrap_err();
+        assert!(
+            error.to_string().contains("target defaults were modified"),
+            "{name}: {error}"
+        );
+        assert_eq!(
+            changed
+                .read::<_, Error, _>(|c| c.query_row(
+                    "SELECT count(*) FROM repositories",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                ))
+                .unwrap(),
+            0
+        );
+    }
     let receipt =
         import_sqlite(&database, &path).unwrap_or_else(|e| panic!("full source import: {e:?}"));
     assert_eq!(receipt.checks.len(), 95);
@@ -89,6 +124,30 @@ fn full_schema_copy_preserves_ids_history_json_numbers_blobs_and_restart() {
     assert!(receipt.source_retained);
     database
         .read::<_, Error, _>(|c| {
+            assert_eq!(
+                c.query_row(
+                    "SELECT value FROM meta WHERE key='schema_version'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )?,
+                devcoordinator2_persistence::schema::DATABASE_SCHEMA_VERSION.to_string()
+            );
+            for table in [
+                "projects",
+                "project_checkouts",
+                "project_checkout_aliases",
+                "project_checkout_artifacts",
+                "project_artifact_requests",
+                "repository_relocations",
+                "relocation_consumers",
+            ] {
+                assert_eq!(
+                    c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))?,
+                    0,
+                    "post-SQLite authority table {table}"
+                );
+            }
             assert_eq!(
                 c.query_row("SELECT count(*) FROM generation_source_origins", [], |r| {
                     r.get::<_, i64>(0)

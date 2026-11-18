@@ -1,5 +1,352 @@
 use super::*;
 
+#[test]
+fn legacy_explicit_origin_upgrade_preserves_status_rollback_and_native_source_identity() {
+    use crate::persistence::{Error as PersistenceError, Persistence, schema::MIGRATIONS};
+    use sha2::{Digest, Sha256};
+
+    let uid = rustix::process::getuid().as_raw();
+    let gid = rustix::process::getgid().as_raw();
+    assert_ne!(uid, 0, "legacy Git fixtures require a non-root caller");
+    let world = World::new();
+    let git = |path: &Path, args: &[&str]| {
+        let output = std::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(path)
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    std::fs::remove_file(world.worktree.join(".git")).unwrap();
+    git(&world.worktree, &["init", "--quiet"]);
+    let declaration = "schema=2\n[deployment.web]\nsource='worktree'\ncomponents=['smtp']\n[deployment.web.component.smtp]\ntype='external'\ntcp='127.0.0.1:25'\n";
+    std::fs::write(world.worktree.join(".devcoordinator.toml"), declaration).unwrap();
+    std::fs::write(world.worktree.join(".gitignore"), ".devcoordinator/\n").unwrap();
+    git(
+        &world.worktree,
+        &["add", ".devcoordinator.toml", ".gitignore"],
+    );
+    git(
+        &world.worktree,
+        &["commit", "--quiet", "-m", "Legacy source"],
+    );
+    let linked = world._temporary.path().join("legacy-candidate");
+    git(
+        &world.worktree,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let root = world.worktree.canonicalize().unwrap();
+    let linked = linked.canonicalize().unwrap();
+    // These are exactly the schema-35 producer's IDs, not a new registration.
+    let repository_id = crate::ids::repository_id(&root).unwrap();
+    let declared_worktree = crate::ids::worktree_id(&root).unwrap();
+    let origin = GenerationSourceOrigin {
+        worktree_id: crate::ids::worktree_id(&linked).unwrap(),
+        path: linked.clone(),
+    };
+    let deployment_id = DeploymentStore::deployment_id(&declared_worktree, "web", "worktree");
+    let config = (*world.deployments.config).clone();
+    let files = DeploymentFiles::new(config.deployments_dir(), config.secrets_dir());
+    files.ensure_layout(&deployment_id, uid, gid).unwrap();
+    let retained_one = files.generation_path(&deployment_id, 1).unwrap();
+    let retained_two = files.generation_path(&deployment_id, 2).unwrap();
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    for retained in [&retained_one, &retained_two] {
+        crate::deployment_git::GitCli
+            .add_detached_worktree(&root, retained, &head, uid, gid)
+            .unwrap();
+    }
+    let snapshot = crate::deployment_git::GitCli
+        .snapshot(&linked, uid, gid)
+        .unwrap();
+    let specification = load_deployment_spec(&linked, "web").unwrap();
+    let canonical = specification.canonical("worktree");
+    let fingerprint = DeploymentStore::fingerprint(&serde_json::json!({
+        "spec":canonical,"commit":snapshot.commit,"dirty":snapshot.dirty,"source_digest":snapshot.source_digest
+    }));
+
+    let legacy_fixture = crate::persistence::fixture::FixtureDatabase::for_path(
+        &world._temporary.path().join("legacy-origin-authority"),
+    )
+    .unwrap();
+    let persistence = Persistence::connect(&legacy_fixture.config).unwrap();
+    persistence.maintenance_transaction::<_, PersistenceError, _>(|connection| {
+        connection.execute_batch("CREATE TABLE dc2_schema_migrations(version BIGINT PRIMARY KEY,name TEXT NOT NULL,sha256 TEXT NOT NULL,applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())")?;
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(version, _, _)| *version <= 16) {
+            connection.execute_batch(sql)?;
+            let checksum = Sha256::digest(sql.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+            connection.execute("INSERT INTO dc2_schema_migrations(version,name,sha256) VALUES($1,$2,$3)", crate::database::params![version, name, checksum])?;
+        }
+        Ok(())
+    }).unwrap();
+    let legacy = Database::connect_existing(&legacy_fixture.config).unwrap();
+    legacy.transaction(|connection| {
+        connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,$2,'Legacy','2026-09-04T00:00:00Z',$3,'2026-09-04T00:00:00Z')", crate::database::params![repository_id, root.to_string_lossy().into_owned(), uid])?;
+        connection.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES($1,$2,$3,'2026-09-04T00:00:00Z','2026-09-04T00:00:00Z')", crate::database::params![declared_worktree, repository_id, root.to_string_lossy().into_owned()])?;
+        Ok(())
+    }).unwrap();
+    let legacy_store = DeploymentStore::new(legacy.clone());
+    legacy_store
+        .upsert_with_fingerprint(
+            &deployment_id,
+            &RegisteredDeploymentTarget {
+                repository_id: repository_id.clone(),
+                worktree_id: declared_worktree.clone(),
+            },
+            &specification,
+            "worktree",
+            &fingerprint,
+            None,
+            "running",
+            uid,
+            "fixture",
+            None,
+        )
+        .unwrap();
+    legacy_store
+        .add_generation(
+            &deployment_id,
+            1,
+            Some(&head),
+            false,
+            &retained_one,
+            &fingerprint,
+        )
+        .unwrap();
+    legacy_store
+        .add_generation_with_origin(
+            &deployment_id,
+            2,
+            Some(&head),
+            false,
+            &retained_two,
+            &fingerprint,
+            Some(&origin),
+        )
+        .unwrap();
+    legacy_store
+        .set_component_runtime(
+            &deployment_id,
+            "smtp",
+            ComponentRuntimePatch {
+                state: Some("running".into()),
+                health: Some("healthy".into()),
+                generation: Some(Some(2)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    legacy.transaction(|connection| {
+        connection.execute("UPDATE deployments SET current_generation=2,previous_generation=1 WHERE deployment_id=$1", [&deployment_id])?;
+        connection.execute("UPDATE generations SET state=CASE WHEN number=1 THEN 'previous' ELSE 'current' END WHERE deployment_id=$1", [&deployment_id])?;
+        assert_eq!(connection.query_row("SELECT count(*) FROM worktrees WHERE worktree_id=$1", [&origin.worktree_id], |row| row.get::<_, i64>(0))?, 0);
+        assert_eq!(connection.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get::<_, String>(0))?, "35");
+        Ok(())
+    }).unwrap();
+    let before = legacy_store.generation(&deployment_id, 2).unwrap().unwrap();
+
+    let upgraded = Database::connect(&legacy_fixture.config).unwrap();
+    let registry = Registry::new(upgraded.clone());
+    let pin_counts = || {
+        upgraded
+            .read(|connection| {
+                Ok([
+                    connection.query_row(
+                        "SELECT count(*) FROM repository_native_identities WHERE repository_id=$1",
+                        [&repository_id],
+                        |row| row.get::<_, i64>(0),
+                    )?,
+                    connection.query_row(
+                        "SELECT count(*) FROM worktree_native_identities WHERE worktree_id=$1",
+                        [&origin.worktree_id],
+                        |row| row.get::<_, i64>(0),
+                    )?,
+                ])
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        pin_counts(),
+        [0, 0],
+        "SQL migration never claims a physical source observation"
+    );
+    upgraded.read(|connection| {
+        let restored = connection.query_row("SELECT repository_id,worktree_path,registered_at,last_seen_at FROM worktrees WHERE worktree_id=$1", [&origin.worktree_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?;
+        assert_eq!(restored, (repository_id.clone(), linked.to_string_lossy().into_owned(), before.created_at.clone(), before.created_at.clone()));
+        Ok(())
+    }).unwrap();
+    let saved = world._temporary.path().join("saved-legacy-origin");
+    std::fs::rename(&linked, &saved).unwrap();
+    std::fs::create_dir(&linked).unwrap();
+    git(&linked, &["init", "--quiet"]);
+    std::fs::write(linked.join(".devcoordinator.toml"), declaration).unwrap();
+    git(&linked, &["add", ".devcoordinator.toml"]);
+    git(&linked, &["commit", "--quiet", "-m", "Foreign source"]);
+    assert!(
+        crate::deployment_origin::resolve(&registry, &origin, &repository_id, uid, gid).is_err(),
+        "a backfilled locator cannot adopt foreign Git before its first native pin"
+    );
+    assert_eq!(pin_counts(), [0, 0]);
+    let foreign = world._temporary.path().join("foreign-legacy-source");
+    std::fs::rename(&linked, &foreign).unwrap();
+    std::fs::rename(&saved, &linked).unwrap();
+    let foreign_registration = registry.register(&foreign, uid, gid).unwrap();
+    let foreign_origin = GenerationSourceOrigin {
+        worktree_id: foreign_registration.worktree_id,
+        path: foreign,
+    };
+    assert!(
+        crate::deployment_origin::resolve(&registry, &foreign_origin, &repository_id, uid, gid)
+            .is_err(),
+        "a newly registered foreign source never substitutes for the recorded legacy origin"
+    );
+    assert_eq!(pin_counts(), [0, 0]);
+    assert_eq!(
+        crate::deployment_origin::resolve(&registry, &origin, &repository_id, uid, gid).unwrap(),
+        linked
+    );
+    assert_eq!(
+        pin_counts(),
+        [0, 0],
+        "a verified legacy origin remains unpinned during observation"
+    );
+
+    let deployments = Deployments::with_runtime_adapters(
+        config.clone(),
+        upgraded.clone(),
+        registry,
+        Arc::new(MutationDocker::new()),
+        Arc::new(FakeSystemd),
+        Arc::new(ReadyNetwork),
+        Arc::new(crate::deployment_git::GitCli),
+        Arc::new(FixtureHealth),
+        files,
+        Arc::new(FixturePorts),
+        Arc::new(HostClock),
+    );
+    let caller = Caller {
+        uid,
+        gid,
+        ..World::caller()
+    };
+    let status = {
+        let holds = [
+            crate::request_responsiveness_tests::HeldLane::new(
+                upgraded.clone(),
+                crate::persistence::Lane::Write,
+            ),
+            crate::request_responsiveness_tests::HeldLane::new(
+                upgraded.clone(),
+                crate::persistence::Lane::Maintenance,
+            ),
+        ];
+        let began = Instant::now();
+        let status = deployments.status(None, None, Some(&deployment_id), &caller);
+        let elapsed = began.elapsed();
+        drop(holds);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "legacy deployment status waited for a writer: {elapsed:?}"
+        );
+        status.unwrap()
+    };
+    assert_eq!(
+        pin_counts(),
+        [0, 0],
+        "deployment status does not pin a legacy source"
+    );
+    assert_eq!(status.current_generation, Some(2));
+    assert_eq!(status.readiness.unwrap().source_state, "current");
+    assert_eq!(
+        deployments
+            .store
+            .generation(&deployment_id, 2)
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        deployments
+            .store
+            .generation_origin(&deployment_id, 2)
+            .unwrap(),
+        Some(origin.clone())
+    );
+    let started = deployments
+        .control("start", None, None, Some(&deployment_id), None, &caller)
+        .unwrap();
+    assert_eq!(started.current_generation, Some(2));
+    assert_eq!(
+        pin_counts(),
+        [1, 1],
+        "execution admission performs the first native pin"
+    );
+    let rolled_back = deployments
+        .rollback(None, None, Some(&deployment_id), &caller)
+        .unwrap();
+    assert_eq!(rolled_back.deployment_id, deployment_id);
+    assert_eq!(rolled_back.current_generation, Some(3));
+    assert_eq!(
+        deployments
+            .store
+            .generation(&deployment_id, 3)
+            .unwrap()
+            .unwrap()
+            .path,
+        retained_one
+    );
+    assert_eq!(
+        deployments
+            .store
+            .generation_origin(&deployment_id, 2)
+            .unwrap(),
+        Some(origin)
+    );
+    let retained = deployments
+        .store
+        .generation(&deployment_id, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            retained.commit_hash,
+            retained.dirty,
+            retained.path,
+            retained.fingerprint,
+            retained.created_at
+        ),
+        (
+            before.commit_hash,
+            before.dirty,
+            before.path,
+            before.fingerprint,
+            before.created_at
+        )
+    );
+}
+
 #[path = "wait.rs"]
 mod wait;
 
@@ -1153,7 +1500,45 @@ fn healthy_process_without_its_route_is_not_ready() {
 
 #[test]
 fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
-    let fixture = RouteWorld::new("checkout");
+    struct HttpHealth {
+        ready: Arc<AtomicBool>,
+    }
+    impl DeploymentHealth for HttpHealth {
+        fn http_ready(
+            &self,
+            _port: u16,
+            _path: &str,
+            _timeout: Duration,
+            _terminal: &(dyn Fn() -> Option<String> + Sync),
+        ) -> Readiness {
+            if self.ready.load(Ordering::SeqCst) {
+                Readiness::ready("http 204")
+            } else {
+                Readiness::failed("HTTP listener is not ready")
+            }
+        }
+        fn tcp_ready(
+            &self,
+            host: &str,
+            port: u16,
+            timeout: Duration,
+            terminal: &(dyn Fn() -> Option<String> + Sync),
+        ) -> Readiness {
+            FixtureHealth.tcp_ready(host, port, timeout, terminal)
+        }
+    }
+    let mut fixture = RouteWorld::new("checkout");
+    let http_ready = Arc::new(AtomicBool::new(true));
+    fixture.deployments.health = Arc::new(HttpHealth {
+        ready: http_ready.clone(),
+    });
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let specification = std::fs::read_to_string(&declaration).unwrap();
+    std::fs::write(
+        &declaration,
+        format!("{specification}\nhealth={{path=\"/healthz\",timeout_seconds=30}}\n"),
+    )
+    .unwrap();
     let first = fixture.apply().unwrap();
     let starts_before_reconcile = fixture
         .systemd
@@ -1178,6 +1563,101 @@ fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
     );
     let initial = fixture.route();
     let unit = first.components[0].binding.identity.clone().unwrap();
+
+    // Preserve the previously published route, just as a daemon restart does.
+    // One status captures the old healthy row before recovery; both it and a
+    // fresh ready-wait then observe the restarted unit before fresh HTTP proof.
+    fixture.systemd.states.lock().unwrap().remove(&unit);
+    http_ready.store(false, Ordering::SeqCst);
+    let (status_entered, status_reading) = std::sync::mpsc::channel();
+    let (release_status, status_released) = std::sync::mpsc::channel();
+    *fixture.systemd.state_hook.lock().unwrap() = Some(Box::new(move || {
+        status_entered.send(()).unwrap();
+        status_released
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+    }));
+    let status_service = fixture.deployments.clone();
+    let status_caller = fixture.caller.clone();
+    let id = first.deployment_id.clone();
+    let stale_status =
+        std::thread::spawn(move || status_service.status(None, None, Some(&id), &status_caller));
+    status_reading.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (start_entered, starting) = std::sync::mpsc::channel();
+    let (release_start, start_released) = std::sync::mpsc::channel();
+    *fixture.systemd.start_hook.lock().unwrap() = Some(Box::new(move || {
+        start_entered.send(()).unwrap();
+        start_released.recv_timeout(Duration::from_secs(5)).unwrap();
+    }));
+    let service = fixture.deployments.clone();
+    let recovery = std::thread::spawn(move || service.reconcile_routes());
+    starting.recv_timeout(Duration::from_secs(5)).unwrap();
+    release_status.send(()).unwrap();
+    let stale_status = stale_status.join().unwrap().unwrap();
+    let starting_status = fixture.status(&first.deployment_id);
+    let starting_route = fixture.route();
+    let events = crate::events::EventService::new(fixture.world.database.clone()).unwrap();
+    let mut ready_wait = wait::prepare(
+        &fixture,
+        &first.deployment_id,
+        devcoordinator2_api::params::DeploymentWaitState::Ready,
+        &events,
+    );
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let first_poll = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(ready_wait.as_mut().poll(context))
+            })
+            .await;
+            release_start.send(()).unwrap();
+            recovery.join().unwrap().unwrap();
+            let failed_proof_status = fixture.status(&first.deployment_id);
+            let failed_proof_route = fixture.route();
+            http_ready.store(true, Ordering::SeqCst);
+            fixture.deployments.reconcile_routes().unwrap();
+            let (completed_before_health, recovered) = match first_poll {
+                std::task::Poll::Ready(result) => (true, result.unwrap()),
+                std::task::Poll::Pending => (false, ready_wait.await.unwrap()),
+            };
+            assert!(
+                !stale_status.readiness.unwrap().ready,
+                "an old healthy row cannot make the new process ready before its HTTP proof"
+            );
+            assert!(
+                !starting_status.readiness.unwrap().ready,
+                "the saved route must remain unavailable while recovery checks HTTP health"
+            );
+            assert_eq!(starting_status.route_port, None);
+            assert_eq!(
+                starting_status.components[0].lease_id, first.components[0].lease_id,
+                "pending recovery must keep the original stable port allocation"
+            );
+            assert_eq!(starting_status.current_generation, first.current_generation);
+            assert_eq!(starting_status.components[0].health, "unknown");
+            assert_eq!(starting_route["routes"], serde_json::json!([]));
+            assert!(
+                !completed_before_health,
+                "deployment.wait completed before recovery proved HTTP health"
+            );
+            assert!(
+                !failed_proof_status.readiness.unwrap().ready,
+                "failed HTTP proof must leave recovery unavailable and retryable"
+            );
+            assert_eq!(failed_proof_route["routes"], serde_json::json!([]));
+            assert_eq!(recovered["status"]["readiness"]["ready"], true);
+            assert_eq!(
+                recovered["status"]["route_port"],
+                serde_json::json!(first.route_port)
+            );
+        });
+    assert_eq!(
+        fixture.route()["routes"][0]["lease_id"],
+        initial["routes"][0]["lease_id"]
+    );
+
     fixture.systemd.states.lock().unwrap().remove(&unit);
     fixture
         .world

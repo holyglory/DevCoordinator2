@@ -23,6 +23,57 @@ pub fn absent(_: &Path) -> Result<bool, ProtocolError> {
 pub fn measure(_: &Path) -> Result<Measurement, ProtocolError> {
     unsupported()
 }
+pub struct CheckoutSnapshot {
+    pub fingerprint: String,
+    pub protected: bool,
+    pub nested_git: bool,
+    pub measurement: Measurement,
+}
+pub struct CheckoutSnapshotCursor;
+impl CheckoutSnapshotCursor {
+    pub fn new(_: &Path) -> Result<Self, ProtocolError> {
+        unsupported()
+    }
+    pub fn progress(&self) -> (u64, u64, u64) {
+        (0, 0, 0)
+    }
+    pub fn step(
+        &mut self,
+        _: usize,
+        _: usize,
+        _: std::time::Duration,
+    ) -> Result<Option<CheckoutSnapshot>, ProtocolError> {
+        unsupported()
+    }
+}
+pub fn checkout_snapshot(_: &Path) -> Result<CheckoutSnapshot, ProtocolError> {
+    unsupported()
+}
+pub fn checkout_index_fingerprint(_: &Path) -> Result<Option<String>, ProtocolError> {
+    unsupported()
+}
+pub struct CheckoutIndexCursor;
+impl CheckoutIndexCursor {
+    pub fn new_reflog(_: &Path) -> Result<Self, ProtocolError> {
+        unsupported()
+    }
+    pub fn reflog_roots(&self) -> Vec<String> {
+        Vec::new()
+    }
+    pub fn new(_: &Path) -> Result<Self, ProtocolError> {
+        unsupported()
+    }
+    pub fn bytes_hashed(&self) -> u64 {
+        0
+    }
+    pub fn step(
+        &mut self,
+        _: usize,
+        _: std::time::Duration,
+    ) -> Result<Option<Option<String>>, ProtocolError> {
+        unsupported()
+    }
+}
 pub struct MeasurementCursor;
 impl MeasurementCursor {
     pub fn new(_: &Path) -> Result<Self, ProtocolError> {

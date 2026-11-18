@@ -948,6 +948,16 @@ fn execute_admitted_database_setup(
 }
 
 impl LifecycleWorld {
+    fn registration_counts(&self) -> [i64; 4] {
+        self.database.read(|connection| {
+            Ok(connection.query_row(
+                "SELECT (SELECT count(*) FROM repositories),(SELECT count(*) FROM worktrees),(SELECT count(*) FROM repository_native_identities),(SELECT count(*) FROM worktree_native_identities)",
+                [],
+                |row| Ok([row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?]),
+            )?)
+        }).unwrap()
+    }
+
     fn new() -> Self {
         Self::with_docker(Arc::new(FixtureDocker))
     }
@@ -2324,6 +2334,7 @@ fn work_context_survives_governed_run_completion_and_retained_evidence() {
 fn work_context_history_pages_preserve_whole_contexts_and_advance() {
     use devcoordinator2_api::work_context::{WorkAttribution, WorkContext, WorkSource};
     let world = LifecycleWorld::new();
+    assert_eq!(world.registration_counts(), [0, 0, 0, 0]);
     let context = WorkContext {
         alarm: None,
         version: 1,
@@ -2365,11 +2376,17 @@ fn work_context_history_pages_preserve_whole_contexts_and_advance() {
         .unwrap();
     assert_ne!(first.runs[0].run_id, next.runs[0].run_id);
     assert_eq!(next.runs[0].work.as_ref(), Some(&work));
+    assert_eq!(
+        world.registration_counts(),
+        [0, 0, 0, 0],
+        "reading retained local history does not create registry or native identity rows"
+    );
 }
 
 #[test]
 fn run_history_is_bounded_scoped_and_keeps_earlier_identity() {
     let world = LifecycleWorld::new();
+    assert_eq!(world.registration_counts(), [0, 0, 0, 0]);
     let query = |before: Option<String>, limit| devcoordinator2_api::params::TestHistory {
         path: world.worktree.to_string_lossy().into_owned(),
         before,
@@ -2382,6 +2399,11 @@ fn run_history_is_bounded_scoped_and_keeps_earlier_identity() {
             .unwrap()
             .runs
             .is_empty()
+    );
+    assert_eq!(
+        world.registration_counts(),
+        [0, 0, 0, 0],
+        "empty local history remains read-only"
     );
     assert_eq!(
         world
@@ -2408,6 +2430,11 @@ fn run_history_is_bounded_scoped_and_keeps_earlier_identity() {
             }
         }));
     let started = world.start();
+    assert_eq!(
+        world.registration_counts(),
+        [1, 1, 1, 1],
+        "execution still registers and binds the actual Git source"
+    );
     let running = world
         .lifecycle
         .history(query(None, 1), &world.caller)
@@ -3503,6 +3530,7 @@ fn shared_postgres_restart_recovers_failed_cleanup_without_pool_memory() {
 
 #[test]
 fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() {
+    use devcoordinator2_control::persistence::Lane;
     let docker = Arc::new(PostgresDocker::new());
     let world = shared_postgres_world(docker.clone());
     let started = world.start();
@@ -3521,6 +3549,17 @@ fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() 
         "cleanup did not reach the Docker boundary"
     );
     drop(state);
+    world
+        .database
+        .transaction(|connection| {
+            connection.execute("DELETE FROM worktree_native_identities", [])?;
+            connection.execute("DELETE FROM repository_native_identities", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let held_writes = (0..world.database.persistence().pool(Lane::Write).max_size())
+        .map(|_| world.database.persistence().acquire(Lane::Write).unwrap())
+        .collect::<Vec<_>>();
     let retry_service = world.containers.clone();
     let retry_caller = world.caller.clone();
     let retry_reference = reference.clone();
@@ -3536,6 +3575,7 @@ fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() 
     });
     let result = received.recv_timeout(Duration::from_secs(2));
     let retry = retry_received.recv_timeout(Duration::from_secs(2));
+    drop(held_writes);
     // Always release the disposable Docker fixture, including a failed check.
     gate.0.lock().unwrap().1 = true;
     gate.1.notify_all();
@@ -3545,6 +3585,11 @@ fn shared_postgres_inspection_stays_available_while_docker_cleanup_is_stalled() 
         .expect("a stalled Docker removal must not hold the metadata lock")
         .unwrap();
     assert!(result.inspection.is_some());
+    assert_eq!(
+        world.registration_counts(),
+        [1, 1, 0, 0],
+        "inspection and cleanup observation never pin an upgraded source"
+    );
     world.wait_status(TestStatus::Passed);
     let error = retry
         .expect("concurrent cleanup observation must remain bounded")

@@ -91,6 +91,8 @@ pub struct StoredPlan {
     pub public: api::CleanupPlan,
     pub records: Vec<Record>,
     pub policies: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub(crate) checkout_removal: Option<super::lifecycle::CheckoutPlanData>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -116,6 +118,8 @@ pub struct Repository {
 
 #[derive(Clone, Debug, Default)]
 pub struct Context {
+    pub(crate) checkout_removals: BTreeMap<String, super::lifecycle::BoundCheckout>,
+    pub(crate) relocated_artifact_ids: BTreeMap<String, String>,
     pub discovering: bool,
     /// Valid only within one discovery pass; removal always remeasures.
     pub discovery_measurements: BTreeMap<PathBuf, super::fs::Measurement>,

@@ -105,22 +105,23 @@ window.DevCoordinatorWorkspace = (() => {
     };
     repositories.forEach(add);
     runs.forEach(add);
-    deployments.forEach((deployment) => add({ repository_id: deployment.repository_id, display_name: deployment.repository_name }));
+    deployments.forEach((deployment) => add({ ...deployment, repository_id: deployment.repository_id, display_name: deployment.repository_name }));
     const groups = new Map();
     for (const record of records.values()) {
-      const key = record.repository_group_key || record.repository_source?.key || record.repository_id;
-      if (!groups.has(key)) groups.set(key, { key, name: record.repository_group_name || record.repository_source?.name || record.display_name, records: [] });
+      const key = record.project_id || record.repository_group_key || record.repository_source?.key || record.repository_id;
+      if (!groups.has(key)) groups.set(key, { key, projectId: record.project_id || null, name: record.project_name || record.repository_group_name || record.repository_source?.name || record.display_name, records: [] });
       groups.get(key).records.push(record);
     }
     for (const group of groups.values()) {
-      group.records.sort((left, right) => Number(right.display_name === group.name) - Number(left.display_name === group.name)
+      group.records.sort((left, right) => Number(right.repository_id === right.source_repository_id) - Number(left.repository_id === left.source_repository_id)
+        || Number(right.display_name === group.name) - Number(left.display_name === group.name)
         || left.display_name.localeCompare(right.display_name) || left.repository_id.localeCompare(right.repository_id));
       group.repositoryId = group.records[0].repository_id;
       group.paths = [...new Set(group.records.flatMap((record) => record.paths))];
       group.rootPath = group.records[0].root_path || group.paths[0] || '';
       group.defaultName = group.name;
       group.presentation = group.records[0].presentation;
-      group.name = group.presentation?.display_name || group.defaultName;
+      group.name = group.projectId ? group.defaultName : group.presentation?.display_name || group.defaultName;
       group.icon = Object.hasOwn(icons, group.presentation?.icon) ? group.presentation.icon : 'folder';
     }
     return [...groups.values()].sort((left, right) => left.name.localeCompare(right.name) || left.key.localeCompare(right.key));
@@ -244,7 +245,7 @@ window.DevCoordinatorWorkspace = (() => {
       if (selected?.rootPath) window.DevCoordinatorI18n.text(root, 'shell.root', { path: selected.rootPath }); else root.textContent = '';
       root.title = root.textContent;
       root.dataset.uiAllowTruncation = 'The full repository path remains available in Checkouts';
-      editPresentation.hidden = !selected || !identity()?.administrator;
+      editPresentation.hidden = !selected || Boolean(selected.projectId) || !identity()?.administrator;
       window.DevCoordinatorI18n.bind(toggle, () => (selected ? window.DevCoordinatorI18n.t("shell.current_repository_value1_35de51", {value1: selected.name}) : window.DevCoordinatorI18n.t("shell.repositories_1e32af")), "title");
       const record = selected?.records.find((item) => item.repository_id === selectedId);
       const scope = document.querySelector('#workspace-record-scope');
@@ -254,6 +255,7 @@ window.DevCoordinatorWorkspace = (() => {
       window.DevCoordinatorI18n.bind(scope, () => (scope.hidden ? '' : checkoutPath), "title");
       const tabs = [['plan', 'Plan & progress'], ['deployments', 'Deployments'], ['tests', 'Tests'], ['sketches', 'Sketches'], ['decisions', 'Decisions'], ['glossary', 'Glossary']];
       aspects.innerHTML = selectedId ? tabs.map(([view, label]) => `<a href="${href(view, selectedId)}"${(view === currentView || view === 'plan' && workViews.has(currentView)) ? ' aria-current="page"' : ''}>${window.DevCoordinatorI18n.markup(view === "plan" ? "shell.planProgress" : "shell.view_" + view)}</a>`).join('') : '';
+      if (selected?.projectId) aspects.insertAdjacentHTML('afterbegin', `<a href="#/projects/${encodeURIComponent(selected.projectId)}">${window.DevCoordinatorI18n.markup('common.projects_04e2a9')}</a>`);
       workNavigation.hidden = !selectedId || !workViews.has(currentView);
       workNavigation.innerHTML = selectedId && workViews.has(currentView) ? ['plan', ...(canOperate() ? ['progress', 'usage'] : []), ...(identity()?.administrator ? ['performance'] : [])].map(view => `<a href="${href(view, selectedId)}"${view === currentView ? ' aria-current="page"' : ''}>${window.DevCoordinatorI18n.markup('shell.view_' + view)}</a>`).join('') : '';
       paintNavigation();
@@ -316,8 +318,9 @@ window.DevCoordinatorWorkspace = (() => {
           root_path: planned?.root_path || record.root_path, repository_source: source, ...(record.presentation ? { presentation: record.presentation } : {}) };
         return [base, ...(record.worktrees || []).map((worktree) => ({ ...base, worktree_path: worktree.worktree_path }))];
       });
-      data.repositories = [...data.plans, ...registered, ...data.optional];
-      groups = catalogue(data.repositories, data.runs, data.deployments);
+      const withProject = row => ({ ...row, ...(data.memberships?.get(row.repository_id) || {}) });
+      data.repositories = [...data.plans, ...registered, ...data.optional].map(withProject);
+      groups = catalogue(data.repositories, data.runs.map(withProject), data.deployments.map(withProject));
       for (const listener of catalogueListeners) listener();
       return before !== navigationIdentity();
     }
@@ -330,6 +333,24 @@ window.DevCoordinatorWorkspace = (() => {
           const paths = new Map(existing.worktrees.map((worktree) => [worktree.worktree_id, worktree]));
           for (const worktree of row.worktrees) paths.set(worktree.worktree_id, worktree);
           existing.worktrees = [...paths.values()];
+        }
+      }
+    }
+
+    async function loadProjectContext(signal) {
+      const snapshot = data;
+      if (!snapshot) return;
+      const ids = [...new Set([...snapshot.plans, ...snapshot.registered, ...snapshot.runs, ...snapshot.deployments].map(row => row.repository_id).filter(Boolean))].filter(id => !snapshot.contextRead.has(id));
+      for (let offset = 0; offset < ids.length && !signal.aborted; offset += 200) {
+        const page = ids.slice(offset, offset + 200);
+        try {
+          const result = await apiPage('project.context', { repository_ids: page });
+          if (signal.aborted || data !== snapshot) return;
+          for (const member of result.memberships || []) snapshot.memberships.set(member.repository_id, member);
+          page.forEach(id => snapshot.contextRead.add(id));
+        } catch (error) {
+          if (!['operation_unknown', 'permission_denied'].includes(error.code)) throw error;
+          page.forEach(id => snapshot.contextRead.add(id));
         }
       }
     }
@@ -362,6 +383,7 @@ window.DevCoordinatorWorkspace = (() => {
             for (const row of page.headers) plans.set(row.repository_id, row);
             snapshot.plans = [...plans.values()]; snapshot.nextPlans = page.next_repository_id;
           }
+          await loadProjectContext(signal);
           rebuildCatalogue();
           if (active) paintNavigation();
         }
@@ -397,7 +419,8 @@ window.DevCoordinatorWorkspace = (() => {
         if (plans.error) tests = await read('test.list');
         if (signal.aborted) return;
         if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
-        data = { plans: plans.value?.headers || [], registered: repositoryList.value?.repositories || [], optional: [], presentations: new Map(), runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [], nextRepositories: repositoryList.value?.next_repository_id, nextPlans: plans.value?.next_repository_id, catalogueFailed: !!plans.error || !!repositoryList.error };
+        data = { plans: plans.value?.headers || [], registered: repositoryList.value?.repositories || [], optional: [], presentations: new Map(), memberships: new Map(), contextRead: new Set(), runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [], nextRepositories: repositoryList.value?.next_repository_id, nextPlans: plans.value?.next_repository_id, catalogueFailed: !!plans.error || !!repositoryList.error };
+        await loadProjectContext(signal);
         rebuildCatalogue();
         updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList]]);
         if (!canOperate()) return;
@@ -418,7 +441,7 @@ window.DevCoordinatorWorkspace = (() => {
 
     async function resolve(signal) {
       retainedEvidence = null;
-      const [pathname, queryString = ''] = (location.hash || '#/plan').split('?');
+      const [pathname, queryString = ''] = (location.hash || '#/projects').split('?');
       const [, view = 'plan', argument = ''] = pathname.split('/');
       currentView = view;
       active = repositoryViews.has(view) && !(view === 'glossary' && (!argument || argument === 'shared'));
@@ -455,6 +478,7 @@ window.DevCoordinatorWorkspace = (() => {
         } catch (error) {
           if (error.code !== 'permission_denied') throw error;
         }
+        await loadProjectContext(signal);
         rebuildCatalogue();
       }
       if (['tests', 'deployments'].includes(view) && argument && !requested) {

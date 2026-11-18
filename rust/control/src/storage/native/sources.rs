@@ -291,7 +291,7 @@ impl HostBackend {
         Err(blocked("required_recovery"))
     }
 
-    fn ignored_review_path_allowed(path: &Path) -> bool {
+    pub(crate) fn ignored_review_path_allowed(path: &Path) -> bool {
         let components = path
             .components()
             .map(|component| match component {

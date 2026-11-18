@@ -3,9 +3,12 @@ mod discovery;
 mod docker;
 mod docker_engine;
 mod evidence;
+mod lifecycle;
 mod mounts;
 mod revalidate;
 mod sources;
+#[doc(hidden)]
+pub use super::lifecycle::{BoundCheckout, CheckoutBinding, IntegrationProof};
 use super::{
     blocked, fs, hash, json,
     model::{Context, Discovery, Locator, Record},
@@ -19,6 +22,7 @@ use crate::{
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
 pub use discovery::{DiscoveryBudget, DiscoveryCursor};
+pub use lifecycle::CheckoutObservationCursor;
 pub(crate) use mounts::execute as run_mount_helper;
 pub use revalidate::ReobserveCursor;
 use std::ffi::OsString;
@@ -27,6 +31,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub trait Backend: Send + Sync {
+    fn observe_checkout_step(
+        &self,
+        _binding: &super::lifecycle::CheckoutBinding,
+        _integration: Option<super::lifecycle::IntegrationProof>,
+        _context: &Context,
+        _cursor: &mut CheckoutObservationCursor,
+        _budget: DiscoveryBudget,
+    ) -> Result<Option<(Record, super::lifecycle::BoundCheckout)>, ProtocolError> {
+        Err(blocked("checkout_provider_unsupported"))
+    }
+    fn observe_checkout(
+        &self,
+        _binding: &super::lifecycle::CheckoutBinding,
+        _integration: Option<super::lifecycle::IntegrationProof>,
+        _context: &Context,
+    ) -> Result<(Record, super::lifecycle::BoundCheckout), ProtocolError> {
+        Err(blocked("checkout_provider_unsupported"))
+    }
     fn discover(&self, context: &Context) -> Result<Discovery, ProtocolError>;
     /// Refresh a single bound source worktree. Providers must implement actual
     /// observation; validation alone cannot renew an inventory observation.
@@ -129,6 +151,24 @@ impl HostBackend {
 }
 
 impl Backend for HostBackend {
+    fn observe_checkout_step(
+        &self,
+        binding: &super::lifecycle::CheckoutBinding,
+        integration: Option<super::lifecycle::IntegrationProof>,
+        context: &Context,
+        cursor: &mut CheckoutObservationCursor,
+        budget: DiscoveryBudget,
+    ) -> Result<Option<(Record, super::lifecycle::BoundCheckout)>, ProtocolError> {
+        self.observe_checkout_target_step(binding, integration, context, cursor, budget)
+    }
+    fn observe_checkout(
+        &self,
+        binding: &super::lifecycle::CheckoutBinding,
+        integration: Option<super::lifecycle::IntegrationProof>,
+        context: &Context,
+    ) -> Result<(Record, super::lifecycle::BoundCheckout), ProtocolError> {
+        self.observe_checkout_target(binding, integration, context)
+    }
     fn reobserve_step(
         &self,
         record: &Record,
@@ -145,6 +185,9 @@ impl Backend for HostBackend {
         selected: &[String],
         job_id: &str,
     ) -> Result<(), ProtocolError> {
+        if let Some(target) = context.checkout_removals.get(&r.artifact.artifact_id) {
+            return self.resume_checkout_target(target, context);
+        }
         if matches!(r.locator, Locator::Mount { .. }) {
             self.validate_mount_recovery(r, context, selected, job_id)?;
             self.remove_mount(r, job_id)
@@ -171,7 +214,13 @@ impl Backend for HostBackend {
 
     fn absent(&self, r: &Record, context: &Context) -> Result<bool, ProtocolError> {
         match &r.locator {
-            Locator::Directory { path, .. } => fs::absent(path),
+            Locator::Directory { path, .. } => {
+                if let Some(target) = context.checkout_removals.get(&r.artifact.artifact_id) {
+                    self.checkout_absent(target, context)
+                } else {
+                    fs::absent(path)
+                }
+            }
             Locator::Docker { .. } => self.docker_absent(r, context),
             Locator::Mount { target, .. } => {
                 Ok(!self.mount_entries()?.iter().any(|e| e.target == *target)
@@ -350,7 +399,11 @@ impl Backend for HostBackend {
                     return Err(blocked("nested_repository"));
                 }
                 if r.artifact.kind == api::Kind::Worktree {
-                    self.validate_worktree(r, path, git_root.as_deref(), context)?;
+                    if let Some(target) = context.checkout_removals.get(&r.artifact.artifact_id) {
+                        self.validate_checkout_target(r, target, context)?;
+                    } else {
+                        self.validate_worktree(r, path, git_root.as_deref(), context)?;
+                    }
                 } else if let Some(git) = git_root {
                     let git = context
                         .repositories
@@ -419,6 +472,9 @@ impl Backend for HostBackend {
                 git_root,
             } => {
                 if r.artifact.kind == api::Kind::Worktree {
+                    if let Some(target) = context.checkout_removals.get(&r.artifact.artifact_id) {
+                        return self.remove_checkout_target(r, target, context, job_id);
+                    }
                     let git = git_root
                         .as_deref()
                         .ok_or_else(|| blocked("git_owner_unknown"))?;
@@ -573,7 +629,11 @@ pub(super) fn candidate(
 ) -> Result<Record, ProtocolError> {
     let encoded = json(&locator)?;
     let fingerprint = hash(encoded.as_bytes());
-    let id = stable_id("sa", encoded.as_bytes());
+    let id = context
+        .relocated_artifact_ids
+        .get(&fingerprint)
+        .cloned()
+        .unwrap_or_else(|| stable_id("sa", encoded.as_bytes()));
     Ok(Record {
         update_sequence: 0,
         artifact: api::Artifact {
@@ -713,7 +773,7 @@ fn git_bytes_with_stderr_limit(
     Ok((output.stdout, output.stderr))
 }
 
-pub(super) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolError> {
+pub(crate) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolError> {
     if paths.is_empty() {
         return Ok(false);
     }

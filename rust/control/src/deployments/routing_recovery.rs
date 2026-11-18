@@ -209,6 +209,26 @@ pub(crate) fn restore_route(
     if !working_directory.starts_with(&generation_path) {
         return Ok(Recovery::NotApplicable);
     }
+    // A reader may already hold the old healthy component row when the new
+    // process becomes running. Status reads the route after the live runtime,
+    // so withdraw its publishable binding before restarting or proving health.
+    // The stable port allocation, generation and desired intent remain intact.
+    deployments.store.set_route(
+        Some(&domain),
+        deployment_id,
+        Some(&component_name),
+        None,
+        Some(generation),
+    )?;
+    deployments.store.set_component_runtime(
+        deployment_id,
+        &component_name,
+        ComponentRuntimePatch {
+            health: Some("unknown".into()),
+            ..Default::default()
+        },
+    )?;
+    deployments.routes.publish_current()?;
     if state.active_state != "active" {
         let log_path = deployments
             .files

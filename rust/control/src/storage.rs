@@ -1,7 +1,21 @@
 //! One authority for discovery, safety, policy, manual and automatic cleanup.
 pub(crate) mod evidence;
 pub mod fs;
+pub(crate) mod lifecycle;
 mod locks;
+pub(crate) use lifecycle::relocate_source_paths;
+
+pub(crate) fn ensure_artifact_ownership_editable(
+    connection: &crate::database::Connection,
+    record: &model::Record,
+) -> Result<(), crate::database::DatabaseError> {
+    locks::ensure_tree_editable(
+        connection,
+        &record.resource_key,
+        &record.ancestor_keys,
+        None,
+    )
+}
 pub mod model;
 pub mod native;
 #[cfg(test)]
@@ -36,6 +50,27 @@ const OBSERVATION_FRESH_MS: u64 = 2 * 3_600_000;
 /// event-driven refreshes so one large tree cannot create a scan loop.
 pub(crate) const STORAGE_SCAN_INTERVAL_MS: u64 = 3_600_000;
 pub(crate) const STORAGE_SCAN_MIN_GAP_MS: u64 = 300_000;
+
+/// Relocation is a trusted local operation, but it still shares the native
+/// process and mount safety boundary with storage cleanup.
+pub(crate) fn ensure_relocation_inactive(
+    paths: &[std::path::PathBuf],
+) -> Result<(), ProtocolError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    if fs::mount_targets()?.iter().any(|mount| {
+        paths
+            .iter()
+            .any(|path| mount == path || mount.starts_with(path))
+    }) {
+        return Err(blocked("mounted_path"));
+    }
+    if native::processes_reference(paths)? {
+        return Err(blocked("active_process"));
+    }
+    Ok(())
+}
 const MAX_SELECTION: usize = 200;
 const MAX_PLAN_ITEMS: usize = 500;
 type ArtifactProjection = (
@@ -310,6 +345,12 @@ impl StorageService {
             .maintenance_scheduler
             .lock()
             .unwrap_or_else(|poison| poison.into_inner()) = scheduler;
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    pub fn with_fixture_backend(mut self, backend: Arc<dyn native::Backend>) -> Self {
+        self.backend = backend;
+        self
     }
 
     fn request_discovery(&self) {
@@ -940,6 +981,7 @@ impl StorageService {
             public: public.clone(),
             records: bound,
             policies,
+            checkout_removal: None,
         };
         let id = public.plan_id.clone();
         let encoded = json(&plan)?;
@@ -974,6 +1016,9 @@ impl StorageService {
             return parse(&value);
         }
         let plan = self.stored_plan(&p.plan_id)?;
+        if plan.checkout_removal.is_some() {
+            return Err(blocked("checkout_plan_requires_project_start"));
+        }
         if !plan.public.ready {
             return Err(blocked("plan_has_blockers"));
         }
@@ -1023,7 +1068,7 @@ impl StorageService {
             .transaction(move |c| {
                 let value = c
                     .query_row(
-                        "SELECT job_json FROM storage_jobs WHERE job_id=$1",
+                        "SELECT job_json FROM storage_jobs WHERE job_id=$1 FOR UPDATE",
                         [&p.job_id],
                         |r| r.get::<_, String>(0),
                     )
@@ -1147,7 +1192,7 @@ impl StorageService {
         Ok(value)
     }
 
-    fn queue<T: Serialize>(
+    pub(crate) fn queue<T: Serialize>(
         &self,
         kind: &str,
         key: &str,
@@ -1182,6 +1227,16 @@ impl StorageService {
             if let Some((prior,prior_digest))=c.query_row("SELECT job_json,request_sha256 FROM storage_jobs WHERE actor=$1 AND kind=$2 AND idempotency_key=$3",crate::database::params![actor,kind,key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()? {
                 if prior_digest!=digest {return Err(DatabaseError::Domain(conflict("idempotency_key_reused")));}
                 return parse(&prior).map_err(DatabaseError::Domain);
+            }
+            if kind=="cleanup" && let Some(plan_id)=&job.plan_id {
+                    let project=c.query_row("SELECT plan_json#>>'{checkout_removal,public,project_id}' FROM storage_plans WHERE plan_id=$1",[plan_id],|row|row.get::<_,Option<String>>(0)).optional()?.flatten();
+                    if let Some(project)=project {
+                        // Association edits take this same project-row lock and
+                        // reject an active exact-checkout cleanup reservation.
+                        c.query_row("SELECT project_id FROM projects WHERE project_id=$1 FOR UPDATE",[project],|_|Ok(()))?;
+
+                    }
+                    c.prepare("SELECT repository_id FROM repositories WHERE repository_id IN(SELECT target->'binding'->>'physical_repository_id' FROM storage_plans p CROSS JOIN LATERAL jsonb_array_elements(p.plan_json#>'{checkout_removal,targets}') target WHERE p.plan_id=$1 UNION ALL SELECT record->'artifact'->>'repository_id' FROM storage_plans p CROSS JOIN LATERAL jsonb_array_elements(p.plan_json->'records') record WHERE p.plan_id=$1) ORDER BY repository_id FOR UPDATE")?.query_map([plan_id],|row|row.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
             }
             c.execute("INSERT INTO storage_jobs VALUES($1,$2,'queued',$3,$4,$5,$6,$7,$8,$9)",crate::database::params![job.job_id,kind,key,digest,actor,uid,value,encoded,now as i64])?;Ok(job)
         }).map_err(db_error)?;
@@ -1673,6 +1728,10 @@ fn visit(
 }
 
 fn next_sequence(c: &crate::database::Transaction<'_>) -> Result<u64, DatabaseError> {
+    next_sequence_in(c)
+}
+
+pub(crate) fn next_sequence_in(c: &crate::database::Connection) -> Result<u64, DatabaseError> {
     c.execute(
         "UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1",
         [],

@@ -13,6 +13,13 @@ use std::path::{Component, Path, PathBuf};
 const MAX_ENTRIES: usize = 1_000_000;
 const MAX_DEPTH: usize = 128;
 
+#[path = "fs_snapshot_linux.rs"]
+mod checkout_content;
+pub use checkout_content::{
+    CheckoutIndexCursor, CheckoutSnapshot, CheckoutSnapshotCursor, checkout_index_fingerprint,
+    checkout_snapshot,
+};
+
 pub fn open_directory(path: &Path) -> Result<File, ProtocolError> {
     open_directory_if_present(path)?.ok_or_else(|| blocked("directory_identity_unavailable"))
 }
@@ -496,7 +503,14 @@ fn remove_tree_checked(
                 .map_err(|_| unavailable("directory_remove_failed"))?;
         }
     } else {
-        remove_children(&child, expected.0, allow_git, preserve_metadata, 0)?;
+        remove_children(
+            &child,
+            expected.0,
+            allow_git,
+            preserve_metadata,
+            Path::new(""),
+            0,
+        )?;
     }
     let current = unix::statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|_| blocked("directory_changed"))?;
@@ -515,6 +529,7 @@ fn remove_children(
     device: u64,
     allow_git: bool,
     preserve_metadata: bool,
+    relative: &Path,
     depth: usize,
 ) -> Result<(), ProtocolError> {
     if depth > MAX_DEPTH {
@@ -532,6 +547,16 @@ fn remove_children(
             .map_err(|_| blocked("directory_changed"))?;
         if st.st_dev != device {
             return Err(blocked("unexpected_filesystem"));
+        }
+        let child_relative = relative.join(&name);
+        if allow_git
+            && preserve_metadata
+            && super::checkout_entry_protected(
+                &child_relative,
+                unix::FileType::from_raw_mode(st.st_mode) == unix::FileType::Directory,
+            )
+        {
+            return Err(blocked("protected_checkout_data"));
         }
         let flags = if unix::FileType::from_raw_mode(st.st_mode) == unix::FileType::Directory {
             let child = File::from(
@@ -552,7 +577,14 @@ fn remove_children(
             if (m.dev(), m.ino()) != (st.st_dev, st.st_ino) {
                 return Err(blocked("identity_changed"));
             }
-            remove_children(&child, device, allow_git, preserve_metadata, depth + 1)?;
+            remove_children(
+                &child,
+                device,
+                allow_git,
+                preserve_metadata,
+                &child_relative,
+                depth + 1,
+            )?;
             AtFlags::REMOVEDIR
         } else {
             AtFlags::empty()

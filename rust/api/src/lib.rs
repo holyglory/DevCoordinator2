@@ -17,6 +17,7 @@ pub mod incidents;
 pub mod outcomes;
 pub mod params;
 pub mod performance;
+pub mod project;
 pub mod rate_card;
 pub mod recovery;
 pub mod results;
@@ -29,7 +30,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 3;
-pub const DATABASE_SCHEMA_VERSION: u32 = 35;
+pub const DATABASE_SCHEMA_VERSION: u32 = 39;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -642,6 +643,12 @@ const READ_SERVER_ADMIN: OperationPolicy =
     OperationPolicy::new(Scope::Server, Role::Administrator, Effect::Read, true);
 const READ_SERVER_VIEWER: OperationPolicy =
     OperationPolicy::new(Scope::Server, Role::Viewer, Effect::Read, true);
+const REVERSIBLE_PROJECT_OPERATOR: OperationPolicy =
+    OperationPolicy::new(Scope::Repository, Role::Operator, Effect::Reversible, true);
+const REVERSIBLE_PROJECT_VIEWER: OperationPolicy =
+    OperationPolicy::new(Scope::Repository, Role::Viewer, Effect::Reversible, true);
+const DESTRUCTIVE_PROJECT_OPERATOR: OperationPolicy =
+    OperationPolicy::new(Scope::Repository, Role::Operator, Effect::Destructive, true);
 const APPEND_SERVER_VIEWER: OperationPolicy =
     OperationPolicy::new(Scope::Server, Role::Viewer, Effect::Append, false);
 const READ_DEPLOYMENT_ADMIN: OperationPolicy =
@@ -839,6 +846,36 @@ operation_catalog! {
     RepositoryArchive, "repository.archive", "Archive a repository after its blockers are cleared.", REVERSIBLE_SERVER_ADMIN, Protocol, ["repository_archive"], params::ArchiveRepository, results::Repository;
     RepositoryUnarchive, "repository.unarchive", "Restore one archived repository.", REVERSIBLE_SERVER_ADMIN, Protocol, ["repository_unarchive"], params::UnarchiveRepository, results::Repository;
     RepositoryRetire, "repository.retire", "Remove one exact repository and its linked worktrees while retaining a compact Coordinator receipt.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["repository_retire"], params::RetireRepository, results::RetiredRepository;
+    ProjectList, "project.list", "List persistent projects from the authorized cached inventory.", READ_SERVER_VIEWER, Protocol, ["project_list"], project::List, project::ProjectList;
+    ProjectStatus, "project.status", "Read one project's authorized cached explorer view.", READ_SERVER_VIEWER, Protocol, ["project_status"], project::Reference, project::Status;
+    ProjectContext, "project.context", "Map existing repository identities to their explicitly configured projects.", READ_SERVER_VIEWER, Protocol, ["project_context"], project::Context, project::Memberships;
+    ProjectConfigure, "project.configure", "Create or configure explicit project sources, clones and roots.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_configure"], project::Configure, project::Status;
+    ProjectBranchList, "project.branch.list", "Read a bounded filtered cached branch page.", READ_SERVER_VIEWER, Protocol, ["project_branch_list"], project::Page, project::BranchPage;
+    ProjectBranchGet, "project.branch.get", "Read one exact authorized cached branch and its intent.", READ_SERVER_VIEWER, Protocol, ["project_branch_get"], project::BranchItem, project::Branch;
+    ProjectCheckoutList, "project.checkout.list", "Read a bounded filtered cached checkout page.", READ_SERVER_VIEWER, Protocol, ["project_checkout_list"], project::Page, project::CheckoutPage;
+    ProjectCheckoutGet, "project.checkout.get", "Read one exact authorized cached checkout and its intent.", READ_SERVER_VIEWER, Protocol, ["project_checkout_get"], project::CheckoutItem, project::Checkout;
+    ProjectHistory, "project.history", "Read a bounded authorized project activity page.", READ_SERVER_VIEWER, Protocol, ["project_history"], project::Page, project::History;
+    ProjectBranchCommits, "project.branch.commits", "Read one bounded cached commit page with parent identities.", READ_SERVER_VIEWER, Protocol, ["project_branch_commits"], project::BranchReference, project::CommitPage;
+    ProjectBranchCommitsRefresh, "project.branch.commits.refresh", "Queue one bounded commit-history page refresh at an exact observed head.", REVERSIBLE_PROJECT_VIEWER, Protocol, ["project_branch_commits_refresh"], project::CommitRefresh, project::Job;
+    ProjectBranchUpdate, "project.branch.update", "Patch one branch's intent and declared lifecycle using its revision.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_branch_update"], project::BranchUpdate, project::Branch;
+    ProjectBranchRetire, "project.branch.retire", "Queue verified branch retirement after exact local cleanup and proven GitHub integration.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["project_branch_retire"], project::BranchRetire, project::Job;
+    ProjectCheckoutUpdate, "project.checkout.update", "Patch one checkout's intent, declared role and lifecycle.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_update"], project::CheckoutUpdate, project::Checkout;
+    ProjectRefresh, "project.refresh", "Queue an idempotent bounded source refresh on the existing maintenance lane.", REVERSIBLE_PROJECT_VIEWER, Protocol, ["project_refresh"], project::Refresh, project::Job;
+    ProjectJobStatus, "project.job.status", "Read a durable project refresh job.", READ_SERVER_VIEWER, Protocol, ["project_job_status"], project::JobReference, project::Job;
+    ProjectCheckoutRemovePlan, "project.checkout.remove.plan", "Inspect exact checkouts and queue a reviewed cleanup plan.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_plan"], project::cleanup::Plan, project::cleanup::ReviewJob;
+    ProjectCheckoutRemovePlanStatus, "project.checkout.remove.plan.status", "Read progress for one asynchronous checkout review.", READ_SERVER_VIEWER, Protocol, ["project_checkout_remove_plan_status"], project::cleanup::JobReference, project::cleanup::ReviewJob;
+    ProjectCheckoutRemovePlanCancel, "project.checkout.remove.plan.cancel", "Cancel one asynchronous checkout review without deleting files.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_plan_cancel"], project::cleanup::JobReference, project::cleanup::ReviewJob;
+    ProjectCheckoutRemoveApprove, "project.checkout.remove.approve", "Approve one fingerprint-bound cleanup plan.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_remove_approve"], project::cleanup::Approve, project::cleanup::ApprovalReceipt;
+    ProjectCheckoutRemoveStart, "project.checkout.remove.start", "Start exact approved checkout cleanup on the shared storage engine.", DESTRUCTIVE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_start"], project::cleanup::Start, project::cleanup::RemovalJob;
+    ProjectCheckoutRemoveJob, "project.checkout.remove.job", "Verify a checkout cleanup job and its exact removal receipts.", READ_SERVER_VIEWER, Protocol, ["project_checkout_remove_job"], project::cleanup::JobReference, project::cleanup::RemovalJob;
+    ProjectCheckoutRemoveCancel, "project.checkout.remove.cancel", "Request cancellation of one owned checkout cleanup job.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_remove_cancel"], project::cleanup::JobReference, project::cleanup::RemovalJob;
+    ProjectCheckoutArtifactList, "project.checkout.artifact.list", "List explicit build and dependency artifact ownership links for one checkout.", READ_SERVER_VIEWER, Protocol, ["project_checkout_artifact_list"], project::artifacts::List, project::artifacts::Page;
+    ProjectCheckoutArtifactAdopt, "project.checkout.artifact.adopt", "Bind one observed build artifact to a checkout with revision and identity proof.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_artifact_adopt"], project::artifacts::Adopt, project::artifacts::Association;
+    ProjectCheckoutArtifactDetach, "project.checkout.artifact.detach", "Detach one explicit checkout artifact ownership link.", REVERSIBLE_PROJECT_OPERATOR, Protocol, ["project_checkout_artifact_detach"], project::artifacts::Detach, project::artifacts::Association;
+    ProjectCheckoutRelocatePrepare, "project.checkout.relocate.prepare", "Prepare one trusted local checkout relocation while preserving its identities.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_relocate_prepare"], project::relocation::Prepare, project::relocation::Receipt;
+    ProjectCheckoutRelocateVerify, "project.checkout.relocate.verify", "Verify an exact prepared local move and repaired Git metadata.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_relocate_verify"], project::relocation::Reference, project::relocation::Receipt;
+    ProjectCheckoutRelocateCommit, "project.checkout.relocate.commit", "Commit verified current paths while retaining permanent identities and path aliases.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_relocate_commit"], project::relocation::Reference, project::relocation::Receipt;
+    ProjectCheckoutRelocateCancel, "project.checkout.relocate.cancel", "Cancel a prepared trusted local relocation after verifying the original source.", REVERSIBLE_SERVER_ADMIN, Protocol, ["project_checkout_relocate_cancel"], project::relocation::Reference, project::relocation::Receipt;
     ServerRegister, "server.register", "Adopt one systemd-supervised local listener into the server inventory.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, [], params::ServerRegister, results::ServerRow;
     ServerList, "server.list", "List exact systemd-supervised local listener registrations.", READ_SERVER_ADMIN, Protocol, [], params::ServerList, results::ServerList;
     ServerStop, "server.stop", "Mark one systemd-supervised listener registration as stopping.", REVERSIBLE_SERVER_ADMIN, Protocol, [], params::ServerStop, results::ServerRow;
@@ -1331,8 +1368,42 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 196);
-        assert_eq!(tools.len(), 166);
+        assert_eq!(OPERATIONS.len(), 226);
+        assert_eq!(tools.len(), 196);
+        for name in [
+            "project.checkout.remove.plan.status",
+            "project.checkout.remove.plan.cancel",
+            "project.checkout.artifact.list",
+            "project.checkout.artifact.adopt",
+            "project.checkout.artifact.detach",
+        ] {
+            assert!(
+                operations.contains(name),
+                "missing Explorer operation {name}"
+            );
+        }
+        assert_eq!(
+            operation("project.refresh").unwrap().policy.role,
+            Role::Viewer
+        );
+        assert_eq!(
+            operation("project.branch.commits.refresh")
+                .unwrap()
+                .policy
+                .role,
+            Role::Viewer
+        );
+        assert_eq!(
+            operation("project.checkout.remove.start")
+                .unwrap()
+                .policy
+                .effect,
+            Effect::Destructive
+        );
+        assert_eq!(
+            operation("project.branch.retire").unwrap().policy.role,
+            Role::Administrator
+        );
         assert_eq!(cli_routes.len(), OPERATIONS.len());
         let discovered = catalog_summary("storage.");
         assert!(

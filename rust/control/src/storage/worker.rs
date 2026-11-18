@@ -35,6 +35,8 @@ struct ScanJob {
     cursor: std::sync::Mutex<Option<ScanCursor>>,
     revalidation: bool,
     target_cursor: std::sync::Mutex<Option<super::revalidate::RevalidationCursor>>,
+    checkout_review: bool,
+    review_cursor: std::sync::Mutex<Option<super::lifecycle::CheckoutReviewCursor>>,
     terminal_error: std::sync::Mutex<Option<ProtocolError>>,
 }
 
@@ -51,13 +53,17 @@ pub(super) fn scan_job_for_test(
         cursor: std::sync::Mutex::new(cursor),
         revalidation: false,
         target_cursor: std::sync::Mutex::new(None),
+        checkout_review: false,
+        review_cursor: std::sync::Mutex::new(None),
         terminal_error: std::sync::Mutex::new(None),
     })
 }
 
 impl crate::maintenance::Job for ScanJob {
     fn name(&self) -> &'static str {
-        if self.revalidation {
+        if self.checkout_review {
+            "storage_checkout_review"
+        } else if self.revalidation {
             "storage_revalidation"
         } else {
             "storage_discovery"
@@ -89,7 +95,19 @@ impl crate::maintenance::Job for ScanJob {
             entries: 256,
             elapsed: budget.remaining().min(Duration::from_millis(25)),
         };
-        let result = if self.revalidation {
+        let result = if self.checkout_review {
+            let mut review = self
+                .review_cursor
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let result =
+                self.service
+                    .execute_checkout_review_step(&self.id, &mut review, native_budget);
+            if let Some(state) = review.as_ref() {
+                budget.consume(state.last_rows, state.last_bytes);
+            }
+            result
+        } else if self.revalidation {
             let mut target = self
                 .target_cursor
                 .lock()
@@ -435,6 +453,22 @@ impl StorageService {
             now_ms: now,
             ..Context::default()
         };
+        // Only explicitly committed relocations reuse a path-bound historical
+        // storage ID. Ordinary newly observed aliases retain normal identity.
+        let relocated=self.database.read(|connection| {
+            let mut query=connection.prepare("SELECT record_json FROM storage_artifacts a WHERE a.removed_at_ms IS NULL AND EXISTS(SELECT 1 FROM storage_changes s WHERE s.artifact_id=a.artifact_id AND s.kind='source_paths_relocated') ORDER BY a.artifact_id LIMIT 10001")?;
+            Ok(query.query_map([],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
+        }).map_err(db_error)?;
+        if relocated.len() > 10_000 {
+            return Err(unavailable("relocated_storage_catalogue_too_large"));
+        }
+        for value in relocated {
+            let record: super::model::Record = parse(&value)?;
+            context.relocated_artifact_ids.insert(
+                hash(json(&record.locator)?.as_bytes()),
+                record.artifact.artifact_id,
+            );
+        }
         let reviewed = self.database.read(|connection| {
             let mut query = connection.prepare(
                 "SELECT record_json FROM storage_artifacts WHERE kind='worktree' AND removed_at_ms IS NULL AND jsonb_typeof(record_json->'ignored_review')='object' ORDER BY artifact_id LIMIT 1025",
@@ -745,111 +779,115 @@ impl StorageService {
                 job = current;
                 let service = self.clone();
                 let id = job.job_id.clone();
-                let result = if job.kind == "scan" || job.kind == "revalidate" {
-                    let scheduler = self
-                        .maintenance_scheduler
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner())
-                        .upgrade();
-                    match scheduler {
-                        None => Ok(Err(blocked("maintenance_scheduler_unavailable"))),
-                        Some(scheduler) => {
-                            let scan = std::sync::Arc::new(ScanJob {
-                                service,
-                                id,
-                                cursor: std::sync::Mutex::new(None),
-                                revalidation: job.kind == "revalidate",
-                                target_cursor: std::sync::Mutex::new(None),
-                                terminal_error: std::sync::Mutex::new(None),
-                            });
-                            let mut continuation = None;
-                            let mut retry_events = scheduler.retry_events();
-                            loop {
-                                if *shutdown.borrow() {
-                                    break Ok(Err(blocked("storage_scan_interrupted")));
-                                }
-                                let step_permit = match permit.take() {
-                                    Some(permit) => permit,
-                                    None => match self
-                                        .capacity
-                                        .admit_native(&run, "storage", uid, shutdown.clone())
-                                        .await
-                                    {
-                                        Ok(permit) => permit,
-                                        Err(error) => break Ok(Err(error)),
-                                    },
-                                };
-                                retry_events.borrow_and_update();
-                                let reply = scheduler
-                                    .submit_async(
-                                        scan.clone(),
-                                        crate::maintenance::Budget::new(
-                                            Duration::from_millis(25),
-                                            256,
-                                            256 * 1024,
-                                        ),
-                                        continuation.clone(),
-                                    )
-                                    .await;
-                                // A resumable scan owns capacity only for this
-                                // batch, including when maintenance defers it.
-                                // Existing queued cleanup and tests get a turn
-                                // before the next discovery batch is admitted.
-                                drop(step_permit);
-                                let retry_at = match reply {
-                                    Ok(reply) => match reply.status {
-                                        crate::maintenance::JobStatus::Complete => {
-                                            break Ok(Ok(()));
-                                        }
-                                        crate::maintenance::JobStatus::Deferred {
-                                            not_before_ms,
-                                        } => Some(not_before_ms),
-                                        crate::maintenance::JobStatus::Continue { cursor } => {
-                                            continuation = Some(cursor);
-                                            continue;
-                                        }
-                                        crate::maintenance::JobStatus::Retry { .. } => None,
-                                        crate::maintenance::JobStatus::Failed { reason } => {
-                                            if let Some(error) = scan.take_terminal_error() {
-                                                break Ok(Err(error));
+                let result =
+                    if matches!(job.kind.as_str(), "scan" | "revalidate" | "checkout_review") {
+                        let scheduler = self
+                            .maintenance_scheduler
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .upgrade();
+                        match scheduler {
+                            None => Ok(Err(blocked("maintenance_scheduler_unavailable"))),
+                            Some(scheduler) => {
+                                let scan = std::sync::Arc::new(ScanJob {
+                                    service,
+                                    id,
+                                    cursor: std::sync::Mutex::new(None),
+                                    revalidation: job.kind == "revalidate",
+                                    target_cursor: std::sync::Mutex::new(None),
+                                    checkout_review: job.kind == "checkout_review",
+                                    review_cursor: std::sync::Mutex::new(None),
+                                    terminal_error: std::sync::Mutex::new(None),
+                                });
+                                let mut continuation = None;
+                                let mut retry_events = scheduler.retry_events();
+                                loop {
+                                    if *shutdown.borrow() {
+                                        break Ok(Err(blocked("storage_scan_interrupted")));
+                                    }
+                                    let step_permit = match permit.take() {
+                                        Some(permit) => permit,
+                                        None => match self
+                                            .capacity
+                                            .admit_native(&run, "storage", uid, shutdown.clone())
+                                            .await
+                                        {
+                                            Ok(permit) => permit,
+                                            Err(error) => break Ok(Err(error)),
+                                        },
+                                    };
+                                    retry_events.borrow_and_update();
+                                    let reply = scheduler
+                                        .submit_async(
+                                            scan.clone(),
+                                            crate::maintenance::Budget::new(
+                                                Duration::from_millis(25),
+                                                256,
+                                                256 * 1024,
+                                            ),
+                                            continuation.clone(),
+                                        )
+                                        .await;
+                                    // A resumable scan owns capacity only for this
+                                    // batch, including when maintenance defers it.
+                                    // Existing queued cleanup and tests get a turn
+                                    // before the next discovery batch is admitted.
+                                    drop(step_permit);
+                                    let retry_at = match reply {
+                                        Ok(reply) => match reply.status {
+                                            crate::maintenance::JobStatus::Complete => {
+                                                break Ok(Ok(()));
                                             }
-                                            break Ok(Err(ProtocolError::new(
+                                            crate::maintenance::JobStatus::Deferred {
+                                                not_before_ms,
+                                            } => Some(not_before_ms),
+                                            crate::maintenance::JobStatus::Continue { cursor } => {
+                                                continuation = Some(cursor);
+                                                continue;
+                                            }
+                                            crate::maintenance::JobStatus::Retry { .. } => None,
+                                            crate::maintenance::JobStatus::Failed { reason } => {
+                                                if let Some(error) = scan.take_terminal_error() {
+                                                    break Ok(Err(error));
+                                                }
+                                                break Ok(Err(ProtocolError::new(
                                                 devcoordinator2_api::ErrorCode::StorageUnavailable,
                                                 reason,
                                             )));
+                                            }
+                                        },
+                                        Err(_) => {
+                                            // A full queue, a database outage or another live
+                                            // lease is not a completed scan. Keep the accepted
+                                            // durable job and retry while the service is active.
+                                            None
                                         }
-                                    },
-                                    Err(_) => {
-                                        // A full queue, a database outage or another live
-                                        // lease is not a completed scan. Keep the accepted
-                                        // durable job and retry while the service is active.
-                                        None
+                                    };
+                                    if !scheduler
+                                        .wait_retry(&mut retry_events, retry_at, &mut shutdown)
+                                        .await
+                                    {
+                                        break Ok(Err(blocked("storage_scan_interrupted")));
                                     }
-                                };
-                                if !scheduler
-                                    .wait_retry(&mut retry_events, retry_at, &mut shutdown)
-                                    .await
-                                {
-                                    break Ok(Err(blocked("storage_scan_interrupted")));
                                 }
                             }
                         }
-                    }
-                } else {
-                    tokio::task::spawn_blocking(move || {
-                        crate::database::maintenance_context(|| service.execute_job(&id))
-                    })
-                    .await
-                    .map_err(|error| {
-                        ProtocolError::new(
-                            devcoordinator2_api::ErrorCode::InternalError,
-                            "storage worker interrupted",
-                        )
-                        .with_detail(error.to_string())
-                    })
-                };
+                    } else {
+                        tokio::task::spawn_blocking(move || {
+                            crate::database::maintenance_context(|| service.execute_job(&id))
+                        })
+                        .await
+                        .map_err(|error| {
+                            ProtocolError::new(
+                                devcoordinator2_api::ErrorCode::InternalError,
+                                "storage worker interrupted",
+                            )
+                            .with_detail(error.to_string())
+                        })
+                    };
                 if !(matches!(result, Ok(Ok(())))
-                    || matches!(job.kind.as_str(), "scan" | "revalidate") && *shutdown.borrow())
+                    || matches!(job.kind.as_str(), "scan" | "revalidate" | "checkout_review")
+                        && *shutdown.borrow())
                 {
                     let failed_job = job.clone();
                     let _ = self
@@ -902,6 +940,23 @@ impl StorageService {
             .blocking(move |service| service.capacity.unregister_run(&run))
             .await;
         self.wake.notify_waiters();
+    }
+
+    /// Drive the real queued-to-running admission before finite fixture work.
+    /// Test callers cannot bypass the production running-state intent guard.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub(crate) fn execute_queued_job_for_fixture(&self, id: &str) -> Result<(), ProtocolError> {
+        if self.begin_job(id)?.is_some() {
+            self.execute_job(id)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_checkout_review_for_fixture(&self, id: &str) -> Result<(), ProtocolError> {
+        self.checkout_review(id)?;
+        self.begin_job(id)?;
+        Ok(())
     }
 
     /// Finite execution boundary used by the native worker and acceptance fixtures.
@@ -976,9 +1031,31 @@ impl StorageService {
                 self.finish(id, api::JobState::Completed, None)?;
             }
             "cleanup" => self.execute_cleanup(&job)?,
+            "checkout_review" => {
+                let mut cursor = None;
+                loop {
+                    match self.execute_checkout_review_step(
+                        id,
+                        &mut cursor,
+                        super::native::DiscoveryBudget::default(),
+                    ) {
+                        Ok(true) => break,
+                        Ok(false) => {}
+                        Err(error) => {
+                            self.finish(id, api::JobState::Failed, Some(error.message))?;
+                            break;
+                        }
+                    }
+                }
+            }
             _ => return Err(blocked("unknown_storage_job")),
         }
         Ok(())
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    pub fn execute_checkout_review_for_fixture(&self, id: &str) -> Result<(), ProtocolError> {
+        self.execute_queued_job_for_fixture(id)
     }
 
     fn execute_cleanup(&self, job: &api::Job) -> Result<(), ProtocolError> {
@@ -1053,7 +1130,8 @@ impl StorageService {
                 {
                     return Err(conflict("artifact_changed"));
                 }
-                let context = self.context()?;
+                let mut context = self.context()?;
+                self.checkout_job_context(&plan, job, &mut context)?;
                 if (completed_resources.contains(&record.resource_key)
                     || record
                         .ancestor_keys
@@ -1069,7 +1147,11 @@ impl StorageService {
                     if self.backend.absent(&record, &context)? {
                         return Ok(());
                     }
-                    if matches!(record.locator, super::model::Locator::Mount { .. }) {
+                    if matches!(record.locator, super::model::Locator::Mount { .. })
+                        || context
+                            .checkout_removals
+                            .contains_key(&record.artifact.artifact_id)
+                    {
                         attempted = true;
                         self.backend
                             .resume(&record, &context, &selected, &job.job_id)?;
@@ -1473,12 +1555,8 @@ impl StorageService {
             .unwrap_or_default();
         let _ = self.events.publish(NewEvent {
             occurred_at: now,
-            dedupe_key: Some(format!(
-                "storage:{}:{}:{}",
-                job.job_id,
-                event,
-                job.receipts.len()
-            )),
+            dedupe_key: (event != "progress")
+                .then(|| format!("storage:{}:{}:{}", job.job_id, event, job.receipts.len())),
             event: OwnedEvent::Other(OtherOwnedEvent {
                 review: None,
                 kind: format!("storage.job.{event}"),

@@ -1883,7 +1883,9 @@ impl TestLifecycle {
             ));
         }
         if !caller.is_console() {
-            return self.resolve(path, caller).map(|(worktree, _)| worktree);
+            let info = resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
+            self.inner.registry.preview_source_identity(&info)?;
+            return Ok(info.worktree_root);
         }
         let requested = path.to_owned();
         self.inner
@@ -1928,10 +1930,7 @@ impl TestLifecycle {
             return Ok((worktree, id));
         }
         let info = resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
-        let worktree_id = crate::ids::worktree_id(&info.worktree_root).map_err(|error| {
-            ProtocolError::new(ErrorCode::RepositoryNotFound, "cannot identify worktree")
-                .with_detail(error.to_string())
-        })?;
+        let (_, worktree_id) = self.inner.registry.observed_identity_for_info(&info)?;
         Ok((info.worktree_root, worktree_id))
     }
 
