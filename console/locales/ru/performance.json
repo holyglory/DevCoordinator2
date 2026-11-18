@@ -118,5 +118,20 @@
   "reviewScopeTotal": "Итого по проверке: {tokens}",
   "periodScopeTotal": "Итого за период: {tokens}",
   "reviewTotalLabel": "Итого по проверке",
-  "periodTotalLabel": "Итого за период"
+  "periodTotalLabel": "Итого за период",
+  "summaryRecorded": "Записано",
+  "summaryPeriod": "Период",
+  "summaryReviews": "Обзоры",
+  "apiEquivalentCost": "Эквивалентная стоимость по тарифам API",
+  "costData": "Данные о стоимости",
+  "requests": "Запросы",
+  "notRecorded": "Не записано",
+  "noCostBreakdown": "Нет разбивки стоимости",
+  "noMatchingRates": "Нет подходящих тарифов",
+  "pricingUnavailable": "Цены недоступны",
+  "pricesComplete": "Стоимость рассчитана",
+  "pricesPartial": "Некоторые цены отсутствуют",
+  "missingRatesNote": "Количество токенов записано; соответствующие цены моделей отсутствуют.",
+  "missingBreakdownNote": "Количество запросов и сведения о стоимости по видам деятельности недоступны.",
+  "recordedData": "Записанные данные"
 }

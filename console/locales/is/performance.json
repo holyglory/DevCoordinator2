@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Samtals fyrir yfirferð: {tokens}",
   "periodScopeTotal": "Samtals á tímabili: {tokens}",
   "reviewTotalLabel": "Samtals fyrir yfirferð",
-  "periodTotalLabel": "Samtals á tímabili"
+  "periodTotalLabel": "Samtals á tímabili",
+  "summaryRecorded": "Skráð",
+  "summaryPeriod": "Tímabil",
+  "summaryReviews": "Yfirferðir",
+  "apiEquivalentCost": "Jafngildur kostnaður á API-verði",
+  "costData": "Kostnaðargögn",
+  "requests": "Beiðnir",
+  "notRecorded": "Ekki skráð",
+  "noCostBreakdown": "Engin sundurliðun kostnaðar",
+  "noMatchingRates": "Engin samsvarandi verð",
+  "pricingUnavailable": "Verðupplýsingar ekki tiltækar",
+  "pricesComplete": "Verðlagt",
+  "pricesPartial": "Sum verð vantar",
+  "missingRatesNote": "Fjöldi tákna er skráður; samsvarandi verð fyrir líkön vantar.",
+  "missingBreakdownNote": "Fjöldi beiðna og kostnaðarupplýsingar eftir verkþáttum eru ekki tiltækar.",
+  "recordedData": "Skráð gögn"
 }

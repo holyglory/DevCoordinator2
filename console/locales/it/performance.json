@@ -115,5 +115,20 @@
   "reviewScopeTotal": "Totale revisione: {tokens}",
   "periodScopeTotal": "Totale periodo: {tokens}",
   "reviewTotalLabel": "Totale revisione",
-  "periodTotalLabel": "Totale periodo"
+  "periodTotalLabel": "Totale periodo",
+  "summaryRecorded": "Registrato",
+  "summaryPeriod": "Periodo",
+  "summaryReviews": "Revisioni",
+  "apiEquivalentCost": "Costo equivalente API",
+  "costData": "Dati sui costi",
+  "requests": "Richieste",
+  "notRecorded": "Non registrato",
+  "noCostBreakdown": "Nessuna ripartizione dei costi",
+  "noMatchingRates": "Nessuna tariffa corrispondente",
+  "pricingUnavailable": "Prezzi non disponibili",
+  "pricesComplete": "Valorizzato",
+  "pricesPartial": "Mancano alcuni prezzi",
+  "missingRatesNote": "I conteggi dei token sono registrati; mancano i prezzi corrispondenti dei modelli.",
+  "missingBreakdownNote": "I conteggi delle richieste e i dettagli dei costi per attività non sono disponibili.",
+  "recordedData": "Dati registrati"
 }

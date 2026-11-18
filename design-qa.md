@@ -1190,3 +1190,27 @@ must pass before live deployment/source-identity verification and the qualified
 delivery receipt can complete handoff. The existing Coordinator outcomes
 `pa247566084de30d6` and `p3f7e41c32deab9a5` remain authoritative for that work;
 this report records evidence, not completion or design approval.
+
+## Performance compact command and summary band — 2026-11-18
+
+The selected continuation is sketch s5f8db40349080d73, revision 9, surface console-performance-loading, with source image SHA-256 6036cb9537165f7244fb10688a8f1d2478832682259077790fe3ca524bdc8dc2. The source is one dark settled Performance window at 1523×1033: controls and four summary metrics share an approximately 80px band, followed immediately by the date/status line, distribution panels, and activity table.
+
+The initial comparison caught a missing mobile calendar asset: the Custom dates control rendered as a filled square. The implementation now supplies the Tabler asset and CSS mask, and the existing browser journey checks that both compact action icons decode successfully. The complete corrected browser rerun passed 1,487 checks; an earlier interrupted run remains incomplete and is retained separately.
+
+The preliminary manual and audit passes recorded in PR99 were invalid. Passing decisions had been generated before every current screenshot was inspected, and the audit cited captures from before the calendar correction. Those artifacts are retained under their `invalid-*` names, with the reason and hashes in `formal-run-238-calendar-20261118/evidence-invalidation.json`. They provide no acceptance evidence.
+
+The genuine formal receipt `formal-web-ui-mwldj0m5-6937c167` passed all 238 required cells with no gaps. Maximum fixture navigation LCP was 640 ms and TTFB was 6.1 ms. Its 2,654 warnings comprise 24 contained horizontal scrollbars, 2,570 allowed contextual overlays, and 60 finding-cap notices. The declared source covers 57 UI inputs and is distinct from complete release qualification.
+
+Three independent reviewers subsequently opened and inspected every current viewport and full-page screenshot: 476 images across all 238 cells. Their decisions and image hashes are bound in `formal-run-238-calendar-20261118/actual-review-binding.json`; the finalized `manual-review-actual.json` passed all 238 cells, SHA-256 `114824c38e1ab1aee7cd1e4a3a9cb08a0a3d82ab6027e3c34eb872bc8e69f91e`.
+
+After that valid manual pass, the selected source was compared with newly captured, source-bound desktop and phone journeys:
+
+1. Open repository Performance — fixture comparison passed. The 78.796875px summary band at 1523×1033 puts controls and metrics together, with explicit missing-rate/request labels below.
+2. Open period token details — fixture comparison passed. The popup presents the correct period components, visible focus, and unavailable prices without clipping.
+3. Open recorded token details on a 390×844 phone — fixture comparison passed. Calendar and refresh glyphs are visible, and the lifetime popup remains inside the viewport.
+
+Current captures, their manifest, and the Product Design comparison are in `/mnt/build-storage/codex/console-performance-kaizen-20261117.T25KDg/selected-audit-corrected-20261118/`. The audit SHA-256 is `e11d9c6dfdfdb809f35b823d60be346dd1b5889209829f57808ccaad82bc1475`. No P0–P2 fixture finding remains; existing activity-legend wrapping is retained as P3 polish. Synthetic labels, measured values and row density differ from the Kaizen source while preserving its selected header hierarchy and the existing Console shell. The incomplete-measurement disclosure remains because the fixture cannot truthfully claim complete capture.
+
+Fixture comparison: passed. Overall handoff: incomplete. These screenshots do not prove real collector latency, shared-live measurements or full assistive-technology behavior. Shared Console comparison, serving-source verification, exact normal-release qualification and a qualified delivery receipt remain required; earlier source48 acceptance does not cover this UI.
+
+final result: incomplete

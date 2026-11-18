@@ -118,5 +118,20 @@
   "reviewScopeTotal": "kontrola celkom: {tokens}",
   "periodScopeTotal": "obdobie celkom: {tokens}",
   "reviewTotalLabel": "celkom pre kontrola",
-  "periodTotalLabel": "celkom pre obdobie"
+  "periodTotalLabel": "celkom pre obdobie",
+  "summaryRecorded": "Zaznamenané",
+  "summaryPeriod": "Obdobie",
+  "summaryReviews": "Hodnotenia",
+  "apiEquivalentCost": "Ekvivalentné náklady podľa cien API",
+  "costData": "Údaje o nákladoch",
+  "requests": "Požiadavky",
+  "notRecorded": "Nezaznamenané",
+  "noCostBreakdown": "Rozpis nákladov nie je k dispozícii",
+  "noMatchingRates": "Žiadne zodpovedajúce sadzby",
+  "pricingUnavailable": "Ceny nie sú k dispozícii",
+  "pricesComplete": "Ocenené",
+  "pricesPartial": "Niektoré ceny chýbajú",
+  "missingRatesNote": "Počty tokenov sú zaznamenané; chýbajú zodpovedajúce ceny modelov.",
+  "missingBreakdownNote": "Počty požiadaviek a podrobnosti o nákladoch podľa aktivít nie sú k dispozícii.",
+  "recordedData": "Zaznamenané údaje"
 }

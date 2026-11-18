@@ -112,5 +112,20 @@
   "reviewScopeTotal": "Σύνολο αξιολόγησης: {tokens}",
   "periodScopeTotal": "Σύνολο περιόδου: {tokens}",
   "reviewTotalLabel": "Σύνολο αξιολόγησης",
-  "periodTotalLabel": "Σύνολο περιόδου"
+  "periodTotalLabel": "Σύνολο περιόδου",
+  "summaryRecorded": "Καταγεγραμμένα",
+  "summaryPeriod": "Περίοδος",
+  "summaryReviews": "Έλεγχοι",
+  "apiEquivalentCost": "Ισοδύναμο κόστος με τιμές API",
+  "costData": "Δεδομένα κόστους",
+  "requests": "Αιτήματα",
+  "notRecorded": "Δεν έχει καταγραφεί",
+  "noCostBreakdown": "Δεν υπάρχει ανάλυση κόστους",
+  "noMatchingRates": "Δεν υπάρχουν αντίστοιχες χρεώσεις",
+  "pricingUnavailable": "Η τιμολόγηση δεν είναι διαθέσιμη",
+  "pricesComplete": "Έχει υπολογιστεί κόστος",
+  "pricesPartial": "Λείπουν ορισμένες τιμές",
+  "missingRatesNote": "Το πλήθος των token έχει καταγραφεί· λείπουν οι αντίστοιχες τιμές των μοντέλων.",
+  "missingBreakdownNote": "Δεν είναι διαθέσιμα το πλήθος αιτημάτων και τα στοιχεία κόστους ανά δραστηριότητα.",
+  "recordedData": "Καταγεγραμμένα δεδομένα"
 }

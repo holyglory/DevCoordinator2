@@ -112,5 +112,20 @@
   "reviewScopeTotal": "revista total: {tokens}",
   "periodScopeTotal": "period total: {tokens}",
   "reviewTotalLabel": "total per revista",
-  "periodTotalLabel": "total per period"
+  "periodTotalLabel": "total per period",
+  "summaryRecorded": "Registrà",
+  "summaryPeriod": "Perioda",
+  "summaryReviews": "Revisiuns",
+  "apiEquivalentCost": "Custs equivalents tenor ils pretschs da l’API",
+  "costData": "Datas dals custs",
+  "requests": "Dumondas",
+  "notRecorded": "Betg registrà",
+  "noCostBreakdown": "Nagina repartiziun dals custs",
+  "noMatchingRates": "Naginas tariffas correspundentas",
+  "pricingUnavailable": "Pretschs betg disponibels",
+  "pricesComplete": "Cun pretschs",
+  "pricesPartial": "Intgins pretschs mancan",
+  "missingRatesNote": "Il dumber da tokens è registrà; ils pretschs correspundents dals models mancan.",
+  "missingBreakdownNote": "Il dumber da dumondas e las indicaziuns dals custs per activitad n’èn betg disponibels.",
+  "recordedData": "Datas registradas"
 }

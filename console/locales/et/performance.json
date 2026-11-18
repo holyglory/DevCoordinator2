@@ -114,5 +114,20 @@
   "reviewScopeTotal": "Ülevaate kogusumma: {tokens}",
   "periodScopeTotal": "Perioodi kogusumma: {tokens}",
   "reviewTotalLabel": "Ülevaate kogusumma",
-  "periodTotalLabel": "Perioodi kogusumma"
+  "periodTotalLabel": "Perioodi kogusumma",
+  "summaryRecorded": "Salvestatud",
+  "summaryPeriod": "Periood",
+  "summaryReviews": "Ülevaated",
+  "apiEquivalentCost": "API hindadele vastav kulu",
+  "costData": "Kuluandmed",
+  "requests": "Päringud",
+  "notRecorded": "Salvestamata",
+  "noCostBreakdown": "Kulude jaotus puudub",
+  "noMatchingRates": "Vastavad hinnad puuduvad",
+  "pricingUnavailable": "Hinnateave pole saadaval",
+  "pricesComplete": "Hinnastatud",
+  "pricesPartial": "Mõned hinnad puuduvad",
+  "missingRatesNote": "Tokenite arv on salvestatud; vastavad mudelite hinnad puuduvad.",
+  "missingBreakdownNote": "Päringute arv ja kuluandmed tegevuste kaupa pole saadaval.",
+  "recordedData": "Salvestatud andmed"
 }

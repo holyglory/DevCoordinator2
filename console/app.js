@@ -3124,14 +3124,15 @@ function utcBucket(ms, includeDate = false) {
 function usageSnapshotText(coverage) {
   const snapshot = coverage?.snapshot;
   if (!snapshot) return '';
-  if (snapshot.refreshing && snapshot.progress_total > 0 && Number(snapshot.progress_completed || 0) < Number(snapshot.progress_total)) {
+  const pending = window.DevCoordinatorUsageLoading.pending(coverage);
+  if (pending && snapshot.progress_total > 0 && Number(snapshot.progress_completed || 0) < Number(snapshot.progress_total)) {
     const percent = Math.min(100, Math.round((Number(snapshot.progress_completed || 0) / Number(snapshot.progress_total)) * 100));
     return `Indexing usage cache · ${percent}%`;
   }
-  if (!snapshot.updated_at_ms) return (snapshot.refreshing ? window.DevCoordinatorI18n.t("common.loading_usage_0134e9") : window.DevCoordinatorI18n.t("common.usage_unavailable_refresh_failed_a2ed62"));
+  if (!snapshot.updated_at_ms) return (pending ? window.DevCoordinatorI18n.t("common.loading_usage_0134e9") : window.DevCoordinatorI18n.t("common.usage_unavailable_refresh_failed_a2ed62"));
   const saved = ago(new Date(snapshot.updated_at_ms).toISOString());
   if (snapshot.refresh_failed) return 'Refresh failed; showing saved usage · ' + saved;
-  return (snapshot.refreshing ? 'Updating saved usage · ' : 'Usage snapshot · ') + saved;
+  return (pending ? 'Updating saved usage · ' : 'Usage snapshot · ') + saved;
 }
 
 function usageRebuildProgress(coverage) {
@@ -3274,7 +3275,7 @@ function continueUsageRefresh(coverages, refresh, waiting) {
 function coverageKind(value) {
   const coverage = value && typeof value === 'object' ? value : null;
   const stateName = coverage?.state || value;
-  if (coverage?.snapshot?.refreshing) return 'indexing';
+  if (coverage && window.DevCoordinatorUsageLoading.pending(coverage)) return 'indexing';
   if (coverage?.snapshot?.refresh_failed) return coverage.snapshot.updated_at_ms ? 'warn' : 'bad';
   if (coverage?.unavailable_reasons?.indexing) return 'indexing';
   if (stateName === 'unavailable' && Object.keys(coverage?.unavailable_reasons || {}).length && Object.keys(coverage.unavailable_reasons).every(reason => ['mapping_pending', 'mapping_unavailable'].includes(reason))) {
@@ -3285,8 +3286,9 @@ function coverageKind(value) {
 }
 
 function coverageText(coverage, compact = false) {
-  if (coverage.snapshot?.refreshing || coverage.snapshot?.refresh_failed) {
-    if (!coverage.snapshot.updated_at_ms) return (coverage.snapshot.refreshing ? window.DevCoordinatorI18n.t("common.loading_usage_0134e9") : window.DevCoordinatorI18n.t("common.usage_refresh_failed_51e310"));
+  const pending = window.DevCoordinatorUsageLoading.pending(coverage);
+  if (pending || coverage.snapshot?.refresh_failed) {
+    if (!coverage.snapshot?.updated_at_ms) return (pending ? window.DevCoordinatorI18n.t("common.loading_usage_0134e9") : window.DevCoordinatorI18n.t("common.usage_refresh_failed_51e310"));
     return (coverage.snapshot.refresh_failed ? window.DevCoordinatorI18n.t("common.saved_usage_refresh_failed_c2c289") : window.DevCoordinatorI18n.t("common.saved_usage_updating_35ffa5"));
   }
   const configured = Number(coverage.configured_collectors || 0);

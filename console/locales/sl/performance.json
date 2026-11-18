@@ -118,5 +118,20 @@
   "reviewScopeTotal": "pregled skupaj: {tokens}",
   "periodScopeTotal": "obdobje skupaj: {tokens}",
   "reviewTotalLabel": "skupaj za pregled",
-  "periodTotalLabel": "skupaj za obdobje"
+  "periodTotalLabel": "skupaj za obdobje",
+  "summaryRecorded": "Zabeleženo",
+  "summaryPeriod": "Obdobje",
+  "summaryReviews": "Pregledi",
+  "apiEquivalentCost": "Enakovredni stroški po cenah API-ja",
+  "costData": "Podatki o stroških",
+  "requests": "Zahteve",
+  "notRecorded": "Ni zabeleženo",
+  "noCostBreakdown": "Ni razčlenitve stroškov",
+  "noMatchingRates": "Ni ustreznih tarif",
+  "pricingUnavailable": "Cene niso na voljo",
+  "pricesComplete": "Ovrednoteno",
+  "pricesPartial": "Nekatere cene manjkajo",
+  "missingRatesNote": "Število žetonov je zabeleženo; ustrezne cene modelov manjkajo.",
+  "missingBreakdownNote": "Število zahtev in podrobnosti o stroških po dejavnostih niso na voljo.",
+  "recordedData": "Zabeleženi podatki"
 }

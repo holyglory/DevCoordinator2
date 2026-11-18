@@ -112,5 +112,20 @@
   "reviewScopeTotal": "本次评估的词元总数：{tokens}",
   "periodScopeTotal": "此期间的词元总数：{tokens}",
   "reviewTotalLabel": "本次评估合计",
-  "periodTotalLabel": "此期间合计"
+  "periodTotalLabel": "此期间合计",
+  "summaryRecorded": "已记录",
+  "summaryPeriod": "期间",
+  "summaryReviews": "评估",
+  "apiEquivalentCost": "API 等价成本",
+  "costData": "成本数据",
+  "requests": "请求数",
+  "notRecorded": "未记录",
+  "noCostBreakdown": "无成本明细",
+  "noMatchingRates": "无匹配费率",
+  "pricingUnavailable": "价格不可用",
+  "pricesComplete": "已计价",
+  "pricesPartial": "部分价格缺失",
+  "missingRatesNote": "词元数量已记录，但缺少对应的模型价格。",
+  "missingBreakdownNote": "无法提供按活动划分的请求数和成本明细。",
+  "recordedData": "已记录数据"
 }

@@ -115,5 +115,20 @@
   "reviewScopeTotal": "İnceleme toplamı: {tokens}",
   "periodScopeTotal": "Dönem toplamı: {tokens}",
   "reviewTotalLabel": "İnceleme toplamı",
-  "periodTotalLabel": "Dönem toplamı"
+  "periodTotalLabel": "Dönem toplamı",
+  "summaryRecorded": "Kaydedilen",
+  "summaryPeriod": "Dönem",
+  "summaryReviews": "İncelemeler",
+  "apiEquivalentCost": "API fiyatlarına eşdeğer maliyet",
+  "costData": "Maliyet verileri",
+  "requests": "İstekler",
+  "notRecorded": "Kaydedilmemiş",
+  "noCostBreakdown": "Maliyet dökümü yok",
+  "noMatchingRates": "Eşleşen tarifeler yok",
+  "pricingUnavailable": "Fiyat bilgisi mevcut değil",
+  "pricesComplete": "Fiyatlandırıldı",
+  "pricesPartial": "Bazı fiyatlar eksik",
+  "missingRatesNote": "Token sayıları kaydedilmiştir; ilgili model fiyatları eksiktir.",
+  "missingBreakdownNote": "Etkinlik başına istek sayıları ve maliyet ayrıntıları mevcut değildir.",
+  "recordedData": "Kaydedilen veriler"
 }

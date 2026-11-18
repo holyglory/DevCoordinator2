@@ -118,5 +118,20 @@
   "reviewScopeTotal": "Celkem za kontrolu: {tokens}",
   "periodScopeTotal": "Celkem za období: {tokens}",
   "reviewTotalLabel": "Celkem za kontrolu",
-  "periodTotalLabel": "Celkem za období"
+  "periodTotalLabel": "Celkem za období",
+  "summaryRecorded": "Zaznamenáno",
+  "summaryPeriod": "Období",
+  "summaryReviews": "Hodnocení",
+  "apiEquivalentCost": "Ekvivalentní náklady podle cen API",
+  "costData": "Údaje o nákladech",
+  "requests": "Požadavky",
+  "notRecorded": "Nezaznamenáno",
+  "noCostBreakdown": "Rozpis nákladů není k dispozici",
+  "noMatchingRates": "Žádné odpovídající sazby",
+  "pricingUnavailable": "Ceny nejsou k dispozici",
+  "pricesComplete": "Oceněno",
+  "pricesPartial": "Některé ceny chybí",
+  "missingRatesNote": "Počty tokenů jsou zaznamenány; chybí odpovídající ceny modelů.",
+  "missingBreakdownNote": "Počty požadavků a podrobnosti o nákladech podle aktivit nejsou k dispozici.",
+  "recordedData": "Zaznamenaná data"
 }

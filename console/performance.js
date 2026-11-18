@@ -20,7 +20,12 @@ window.DevCoordinatorPerformance = (() => {
     const exact = value => value ? `${Number(value.measured).toLocaleString(window.DevCoordinatorI18n.locale)} measured tokens${value.exact == null ? '; incomplete measurement' : ''}` : 'Measurement unavailable';
     const integer = value => value == null ? '—' : Number(value).toLocaleString(window.DevCoordinatorI18n.locale);
     const usd = micros => micros == null ? '—' : new Intl.NumberFormat(window.DevCoordinatorI18n.locale, { style: 'currency', currency: 'USD', minimumFractionDigits: Number(micros) < 10000 ? 4 : 2, maximumFractionDigits: Number(micros) < 10000 ? 4 : 2 }).format(Number(micros) / 1000000);
-    const costState = cost => cost?.status === 'complete' ? 'Complete' : cost?.status === 'partial' ? 'Partial' : 'Unavailable';
+    const text = key => window.DevCoordinatorI18n.t('performance.' + key);
+    const costStatus = cost => ['complete', 'partial'].includes(cost?.status) ? cost.status : 'unavailable';
+    const costState = cost => text(costStatus(cost) === 'complete' ? 'pricesComplete' : costStatus(cost) === 'partial' ? 'pricesPartial' : 'pricingUnavailable');
+    const missingRates = cost => Number(cost?.unavailable_reasons?.rate_card_missing || 0) > 0;
+    const costAvailability = (cost, breakdown = false) => costStatus(cost) !== 'unavailable' ? costState(cost)
+      : missingRates(cost) ? text('noMatchingRates') : text(breakdown ? 'noCostBreakdown' : 'pricingUnavailable');
     function tokenDetail(label, measurement, source = null) {
       const id = `performance-token-detail-${++detailId}`;
       const cost = source?.cost || source || {};
@@ -131,7 +136,9 @@ window.DevCoordinatorPerformance = (() => {
       const rowLabel = row => phases.get(row.activity).size > 1 && row.phase
         ? `${activityLabel(row.activity)} · ${window.DevCoordinatorI18n.t('common.phase_' + row.phase)}`
         : activityLabel(row.activity);
-      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(rowLabel(row))}</td><td>${tokenDetail(rowLabel(row), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.cost?.model_requests)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
+      const note = missingRates(usage.totals?.cost) ? 'missingRatesNote'
+        : activityRows.some(row => row.cost?.model_requests == null || costStatus(row.cost) === 'unavailable') ? 'missingBreakdownNote' : null;
+      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>${window.DevCoordinatorI18n.markup('performance.requests')}</th><th>${window.DevCoordinatorI18n.markup('performance.costData')}</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(rowLabel(row))}</td><td>${tokenDetail(rowLabel(row), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${row.cost?.model_requests == null ? window.DevCoordinatorI18n.markup('performance.notRecorded') : integer(row.cost.model_requests)}</td><td><span class="performance-status ${costStatus(row.cost)}">${window.DevCoordinatorI18n.computedMarkup(() => costAvailability(row.cost, true))}</span></td></tr>`).join('')}</tbody></table></div>${note ? `<p class="performance-cost-note muted" data-performance-cost-note>${window.DevCoordinatorI18n.markup('performance.' + note)}</p>` : ''}</section>`;
     }
     function selection(repositoryId) {
       let session = sessions.get(repositoryId);
@@ -179,6 +186,7 @@ window.DevCoordinatorPerformance = (() => {
       const active = () => !signal.aborted && root.querySelector('[data-performance-page]');
       const find = name => root.querySelector(`[data-performance-${name}]`);
       const requests = { repository_id: repositoryId, window_start_ms: start, window_end_ms: end, outcome_limit: 5 };
+      const periodHeadlineKey = `performance.overview:${JSON.stringify({ ...requests, totals_only: true })}`;
       let currentUsage = null; let reviewData = null; let historyBefore = session.history?.next_before ?? null; let revisionBefore = null;
       const refreshTimers = new Map();
       let loadingProgress;
@@ -230,7 +238,10 @@ window.DevCoordinatorPerformance = (() => {
           const data = await (pending || api(operation, params));
           if (active()) {
             const coverage = data.usage?.coverage || data.coverage;
-            loadingProgress.update(key, coverage);
+            // Completed rich data replaces this same-period headline. An older
+            // headline response must not resurrect progress after its retry is retired.
+            if (key === periodHeadlineKey && periodDetailsReady) loadingProgress.finish(key);
+            else loadingProgress.update(key, coverage);
             if (!window.DevCoordinatorUsageLoading.pending(coverage)) {
               if (cache.size >= 32) cache.delete(cache.keys().next().value);
               cache.set(key, { at: Date.now(), data });
@@ -241,9 +252,9 @@ window.DevCoordinatorPerformance = (() => {
       }
       const previousHeight = root.querySelector("[data-performance-page]") ? root.getBoundingClientRect().height : 0;
       if (previousHeight) root.style.minHeight = previousHeight + "px";
-      root.innerHTML = `<section data-performance-page><div class="performance-top"><header class="performance-heading"><h1><a class="destination-link" href="#/performance"><span data-i18n="performance.performance_442ade">Performance</span></a></h1><div class="performance-range" aria-label="Overview period" data-i18n-attrs='{"aria-label":"performance.overview_period_80309e"}'>${['7d', '30d', '90d'].map(value => `<button type="button" class="btn btn-small" data-performance-range="${value}" aria-pressed="${range === value}">${value}</button>`).join('')}<button type="button" class="btn btn-small" data-performance-custom-open><span data-i18n="performance.custom_494ca7">Custom</span></button><dialog class="performance-date-dialog"><form><h2><span data-i18n="performance.custom_dates_9c855c">Custom dates</span></h2><label><span data-i18n="performance.from_utc_bec5d5">From (UTC)</span><input type="date" name="from" value="${day(start)}" required></label><label><span data-i18n="performance.through_utc_615e9f">Through (UTC)</span><input type="date" name="to" value="${day(end - 1)}" max="${day(Date.now())}" required></label><p role="alert"></p><button class="btn btn-primary" type="submit"><span data-i18n="performance.apply_dates_eb4a4d">Apply dates</span></button><button class="btn" type="button" data-performance-cancel-dates><span data-i18n="performance.cancel_19766e">Cancel</span></button></form></dialog></div><span class="performance-dates">${window.DevCoordinatorI18n.computedMarkup(() => period(start, end))}</span><button type="button" class="btn btn-small" data-performance-refresh><span data-i18n="performance.refresh_0e9161">Refresh</span></button></header>
-        <div class="performance-totals" aria-label="Repository totals" data-i18n-attrs='{"aria-label":"performance.repository_totals_3058a4"}'><div><span><span data-i18n="performance.all_recorded_tokens_998a8f">All recorded tokens</span></span><strong data-performance-lifetime><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div><div><span><span data-i18n="performance.overview_period_tokens_9bcdf5">Overview period tokens</span></span><strong data-performance-period-total><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div><div><span>API-equivalent estimate</span><strong data-performance-period-cost><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong><small data-performance-cost-status class="muted">Standard API basis</small></div><div><span><span data-i18n="performance.all_reviews_ab84bf">All reviews</span></span><strong data-performance-count><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div></div></div>
-        <div class="performance-scope"><div><h2 data-performance-scope-title>${(reference ? window.DevCoordinatorI18n.markup("performance.review_usage_c39675") : window.DevCoordinatorI18n.markup("performance.overview_usage_83f004"))}</h2><span data-performance-scope-total></span>${window.DevCoordinatorUsageLoading.markup()}</div>${reference ? "<button type=\"button\" class=\"btn btn-small\" data-performance-overview><span data-i18n=\"performance.return_to_overview_d8eeb2\">Return to overview</span></button>" : ''}</div><p class="performance-coverage muted" data-performance-coverage role="status"><span data-i18n="performance.loading_measurements_baea02">Loading measurements…</span></p>
+      root.innerHTML = `<section data-performance-page><div class="performance-top"><header class="performance-heading"><h1><a class="destination-link" href="#/performance"><span data-i18n="performance.performance_442ade">Performance</span></a></h1><div class="performance-range" aria-label="Overview period" data-i18n-attrs='{"aria-label":"performance.overview_period_80309e"}'>${['7d', '30d', '90d'].map(value => `<button type="button" class="btn btn-small" data-performance-range="${value}" aria-pressed="${range === value}">${value}</button>`).join('')}<button type="button" class="btn btn-small" data-performance-custom-open aria-label="Custom dates" data-i18n-attrs='{"aria-label":"performance.custom_dates_9c855c"}'><span class="ti ti-calendar performance-action-icon" aria-hidden="true"></span><span class="performance-action-label" data-i18n="performance.custom_494ca7">Custom</span></button><dialog class="performance-date-dialog"><form><h2><span data-i18n="performance.custom_dates_9c855c">Custom dates</span></h2><label><span data-i18n="performance.from_utc_bec5d5">From (UTC)</span><input type="date" name="from" value="${day(start)}" required></label><label><span data-i18n="performance.through_utc_615e9f">Through (UTC)</span><input type="date" name="to" value="${day(end - 1)}" max="${day(Date.now())}" required></label><p role="alert"></p><button class="btn btn-primary" type="submit"><span data-i18n="performance.apply_dates_eb4a4d">Apply dates</span></button><button class="btn" type="button" data-performance-cancel-dates><span data-i18n="performance.cancel_19766e">Cancel</span></button></form></dialog></div><button type="button" class="btn btn-small" data-performance-refresh aria-label="Refresh" data-i18n-attrs='{"aria-label":"performance.refresh_0e9161"}'><span class="ti ti-refresh performance-action-icon" aria-hidden="true"></span><span class="performance-action-label" data-i18n="performance.refresh_0e9161">Refresh</span></button></header>
+        <div class="performance-totals" aria-label="Repository totals" data-i18n-attrs='{"aria-label":"performance.repository_totals_3058a4"}'><div><span data-i18n="performance.summaryRecorded">Recorded</span><strong data-performance-lifetime aria-label="All recorded tokens" data-i18n-attrs='{"aria-label":"performance.all_recorded_tokens_998a8f"}'><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div><div><span data-i18n="performance.summaryPeriod">Period</span><strong data-performance-period-total aria-label="Overview period tokens" data-i18n-attrs='{"aria-label":"performance.overview_period_tokens_9bcdf5"}'><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div><div><span data-i18n="performance.apiEquivalentCost">API-equivalent cost</span><strong data-performance-period-cost><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong><small data-performance-cost-status hidden>Standard API basis</small></div><div><span data-i18n="performance.summaryReviews">Reviews</span><strong data-performance-count><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div></div></div>
+        <div class="performance-scope"><div><h2 data-performance-scope-title ${reference ? '' : 'hidden'}>${(reference ? window.DevCoordinatorI18n.markup("performance.review_usage_c39675") : window.DevCoordinatorI18n.markup("performance.overview_usage_83f004"))}</h2><span data-performance-scope-total ${reference ? '' : 'hidden'}></span>${reference ? '' : `<span class="performance-window">${window.DevCoordinatorI18n.computedMarkup(() => period(start, end))}</span>`}${window.DevCoordinatorUsageLoading.markup()}</div><p class="performance-coverage muted" data-performance-coverage role="status"><span data-i18n="performance.loading_measurements_baea02">Loading measurements…</span></p>${reference ? "<button type=\"button\" class=\"btn btn-small\" data-performance-overview><span data-i18n=\"performance.return_to_overview_d8eeb2\">Return to overview</span></button>" : ''}</div>
         <div class="performance-distributions" data-performance-charts><p><span data-i18n="performance.loading_token_breakdowns_b62cda">Loading token breakdowns…</span></p></div>
         <div class="performance-workspace"><div class="performance-primary"><section class="performance-outcomes"><div class="performance-section-head"><h2><span data-i18n="performance.tokens_by_outcome_860e7c">Tokens by outcome</span></h2><span data-performance-outcome-count></span></div><div data-performance-outcomes><span data-i18n="performance.loading_outcomes_a12af3">Loading outcomes…</span></div><div data-performance-outcomes-more></div></section>
         <section class="performance-history"><h2><span data-i18n="performance.review_history_063ea2">Review history</span></h2><div data-performance-history><span data-i18n="performance.loading_reviews_510c76">Loading reviews…</span></div><div data-performance-history-more></div></section></div>
@@ -300,7 +311,7 @@ window.DevCoordinatorPerformance = (() => {
         const source = workstream ? outcomes.totals.cost : usage.totals;
         if (!append && pendingMeasurements(usage.coverage) && !total.measured) {
           showCoverage(usage);
-          if (!reference && periodMeasurement) find('scope-total').innerHTML = tokenDetail('Period total', periodMeasurement.total_tokens, periodMeasurement.totals);
+          if (!reference && periodMeasurement) find('scope-total').textContent = amount(periodMeasurement.total_tokens);
           else window.DevCoordinatorI18n.text(find('scope-total'), 'performance.loading_measurements_baea02');
           find('charts').innerHTML = `<p>${window.DevCoordinatorI18n.markup('performance.loading_token_breakdowns_b62cda')}</p>`;
           window.DevCoordinatorI18n.text(find('outcomes'), 'performance.loading_outcomes_a12af3');
@@ -310,7 +321,7 @@ window.DevCoordinatorPerformance = (() => {
         }
         if (!append) {
           showCoverage(usage);
-          find('scope-total').innerHTML = `${tokenDetail(reference ? 'Review total' : 'Period total', total, source)}${reference ? '' : ' · ' + esc(period(start, end))}`;
+          find('scope-total').innerHTML = reference ? tokenDetail('Review total', total, source) : esc(amount(total));
           const activitySources = activityComponentSources(usage, outcomes.totals.activities, Boolean(workstream));
           find('charts').innerHTML = distribution('tokensByActivity', outcomes.totals.activities, total, false, source, activitySources) + distribution('tokensByKind', outcomes.kinds, total, true, source) + (workstream ? '' : costMatrix(usage));
           find('outcomes').innerHTML = `<table class="performance-outcome-table"><thead><tr><th><span data-i18n="performance.outcome_4e80ab">Outcome</span></th><th><span data-i18n="performance.plan_item_kind_4accd6">Plan item kind</span></th><th><span data-i18n="performance.activity_mix_3b0dfb">Activity mix</span></th><th><span data-i18n="performance.total_tokens_e7601c">Total tokens</span></th><th>API-equivalent USD</th></tr></thead><tbody></tbody><tfoot><tr><th colspan="4">${window.DevCoordinatorI18n.markup(reference ? "performance.reviewTotalLabel" : "performance.periodTotalLabel")}</th><td>${tokenDetail(reference ? 'Review total' : 'Period total', total, source)}</td></tr></tfoot></table>`;
@@ -399,8 +410,11 @@ window.DevCoordinatorPerformance = (() => {
           if (focused) target.querySelector('button')?.focus({ preventScroll: true });
         }
         const costPending = pending || headline && data.cost?.estimated_usd_micros == null;
-        find('period-cost').innerHTML = costPending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : esc(costAmount(data.cost));
+        const costTarget = find('period-cost');
+        costTarget.innerHTML = costPending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : data.cost?.estimated_usd_micros != null ? esc(costAmount(data.cost)) : window.DevCoordinatorI18n.computedMarkup(() => costAvailability(data.cost));
+        costTarget.classList.toggle('performance-cost-unavailable', costPending || data.cost?.estimated_usd_micros == null);
         find('cost-status').textContent = costPending ? 'Standard API basis' : `${costState(data.cost)} · Standard API basis`;
+        costTarget.title = find('cost-status').textContent;
       }
       async function loadPeriodHeadline(waitForRefresh = false) {
         try {
@@ -408,7 +422,7 @@ window.DevCoordinatorPerformance = (() => {
           if (!active() || periodDetailsReady) return;
           showPeriodTotal(data, true);
           if (!reference) {
-            find('scope-total').innerHTML = pendingMeasurements(data.coverage) && !data.total_tokens.measured ? window.DevCoordinatorI18n.markup('performance.loading_measurements_baea02') : tokenDetail('Overview period total', data.total_tokens, data.totals);
+            find('scope-total').innerHTML = pendingMeasurements(data.coverage) && !data.total_tokens.measured ? window.DevCoordinatorI18n.markup('performance.loading_measurements_baea02') : esc(amount(data.total_tokens));
             window.DevCoordinatorI18n.bind(find('coverage'), () => coverageStatusText(data.coverage));
           }
           if (needsRefresh(data)) scheduleRefresh('period-headline', loadPeriodHeadline, waitForRefresh);
@@ -428,7 +442,7 @@ window.DevCoordinatorPerformance = (() => {
             if (session.scroll) window.scrollTo({ top: session.scroll });
           }
           if (needsRefresh(data)) scheduleRefresh('period', loadPeriod, waitForRefresh);
-          else { clearRefresh('period'); clearRefresh('period-headline'); periodDetailsReady = true; }
+          else { clearRefresh('period'); clearRefresh('period-headline'); periodDetailsReady = true; loadingProgress.finish(periodHeadlineKey); }
         }
         catch (error) { if (active()) { if (!periodMeasurement) window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); window.DevCoordinatorI18n.text(find('period-cost'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
       }
