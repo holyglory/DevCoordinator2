@@ -1696,7 +1696,29 @@ fn pending_review_exact_project_and_source_authorization_precedes_status_and_can
 #[test]
 #[ignore = "requires a marked isolated root work area and explicit nonroot Git/PostgreSQL identities"]
 fn review_hashing_yields_reports_real_progress_cancels_and_restarts_without_partial_plan() {
+    let tracked_listing_bytes = |fixture: &CheckoutFixture, count: usize| {
+        let directory = fixture.checkout.join("tracked-index-fixture");
+        fs::create_dir(&directory).unwrap();
+        let suffix = "x".repeat(96);
+        for index in 0..count {
+            fs::write(
+                directory.join(format!("file-{index:04}-{suffix}.txt")),
+                format!("tracked fixture entry {index}\n"),
+            )
+            .unwrap();
+        }
+        git(&fixture.checkout, &["add", "--", "tracked-index-fixture"]);
+        git(
+            &fixture.checkout,
+            &["commit", "-qm", "tracked listing fixture"],
+        );
+        git(&fixture.checkout, &["push", "-q", "origin", "feature"]);
+        git(&fixture.checkout, &["ls-files", "--stage", "-z"]).len()
+    };
     let fixture = CheckoutFixture::new();
+    let listing_bytes = tracked_listing_bytes(&fixture, 512);
+    assert!(listing_bytes > 64 * 1024);
+    assert!(listing_bytes < crate::repository::WORKTREE_LIST_OUTPUT_LIMIT);
     fs::write(
         fixture.checkout.join("ignored.bin"),
         vec![b'x'; 3 * 1024 * 1024],
@@ -1859,7 +1881,7 @@ fn review_hashing_yields_reports_real_progress_cancels_and_restarts_without_part
             connection
                 .query_row(
                     "SELECT actor FROM storage_plans WHERE plan_id=$1",
-                    [plan.plan_id],
+                    [&plan.plan_id],
                     |row| row.get::<_, String>(0),
                 )
                 .map_err(DatabaseError::from)
@@ -1869,6 +1891,79 @@ fn review_hashing_yields_reports_real_progress_cancels_and_restarts_without_part
         actor,
         caller().actor(),
         "review attribution must not become uid:0"
+    );
+    let approval = fixture.approve(&plan);
+    let removed = fixture.execute(fixture.start(&plan, Some(approval.receipt_id)));
+    assert!(removed.targets[0].fully_removed);
+    assert!(!fixture.checkout.exists());
+    assert!(fixture.fixture.repository.join("source.txt").is_file());
+}
+
+#[test]
+#[ignore = "requires a marked isolated root work area and explicit nonroot Git/PostgreSQL identities"]
+fn staged_listing_overflow_fails_without_a_removal_plan() {
+    let fixture = CheckoutFixture::new();
+    // Keep the oversized listing fixture deterministic: Git's automatic
+    // maintenance is unrelated to the review bound and may race its linked
+    // worktree while thousands of synthetic paths are added.
+    git(&fixture.checkout, &["config", "gc.auto", "0"]);
+    let directory = fixture.checkout.join("oversized-index-fixture");
+    fs::create_dir(&directory).unwrap();
+    let suffix = "x".repeat(96);
+    for index in 0..6144 {
+        fs::write(
+            directory.join(format!("file-{index:04}-{suffix}.txt")),
+            format!("tracked fixture entry {index}\n"),
+        )
+        .unwrap();
+    }
+    git(&fixture.checkout, &["add", "--", "oversized-index-fixture"]);
+    git(
+        &fixture.checkout,
+        &["commit", "-qm", "oversized tracked listing fixture"],
+    );
+    git(&fixture.checkout, &["push", "-q", "origin", "feature"]);
+    assert!(
+        git(&fixture.checkout, &["ls-files", "--stage", "-z"]).len()
+            > crate::repository::WORKTREE_LIST_OUTPUT_LIMIT
+    );
+    let review = queued_review(&fixture, "oversized-staged-listing");
+    fixture
+        .storage
+        .execute_checkout_review_for_fixture(&review.job.job_id)
+        .unwrap();
+    let rejected = fixture
+        .service
+        .checkout_remove_plan_status(
+            removal::JobReference {
+                project_id: "product".into(),
+                job_id: review.job.job_id,
+            },
+            &caller(),
+        )
+        .unwrap();
+    assert!(matches!(rejected.job.state, storage_api::JobState::Failed));
+    assert_eq!(
+        rejected.job.error_code.as_deref(),
+        Some("git_baseline_unverified")
+    );
+    assert!(rejected.plan.is_none());
+    assert!(rejected.job.plan_id.is_none());
+    assert!(fixture.checkout.join("source.txt").is_file());
+    let plans = fixture
+        .fixture
+        .database
+        .read(|connection| {
+            connection
+                .query_row("SELECT count(*) FROM storage_plans", [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .map_err(DatabaseError::from)
+        })
+        .unwrap();
+    assert_eq!(
+        plans, 0,
+        "an incomplete staged listing cannot enable approval"
     );
 }
 
