@@ -212,10 +212,11 @@ pub fn finalize_host(
     {
         return Err("finalization belongs to another installed candidate".into());
     }
-    let current = install::validate_live_checkout(Path::new(&manifest.source_root), false, runner)?;
-    if current != manifest.source_commit {
-        return Err("live source no longer matches the accepted installed candidate".into());
-    }
+    install::validate_source_commit(
+        Path::new(&manifest.source_root),
+        &manifest.source_commit,
+        runner,
+    )?;
     let activated = pending["activated_at_ms"]
         .as_u64()
         .ok_or("activation evidence has no write-admission time")?;

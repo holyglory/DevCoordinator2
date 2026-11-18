@@ -381,6 +381,65 @@ pub fn validate_live_checkout<R: CommandRunner + ?Sized>(
     Ok(head.to_owned())
 }
 
+/// Verify that an installed source commit is still available from the
+/// canonical checkout after main has advanced. Finalization must validate the
+/// immutable Git object selected by the manifest; it must not require the
+/// shared checkout to move backward to the older serving revision.
+pub fn validate_source_commit<R: CommandRunner + ?Sized>(
+    root: &Path,
+    expected: &str,
+    runner: &R,
+) -> Result<String, String> {
+    validate_commit(expected)?;
+    let lexical = std::path::absolute(root)
+        .map_err(|error| format!("cannot make source checkout absolute: {error}"))?;
+    let canonical = lexical
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve source checkout: {error}"))?;
+    if lexical != canonical
+        || lexical
+            .symlink_metadata()
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(true)
+    {
+        return Err(format!(
+            "source checkout must be a real absolute directory: {}",
+            lexical.display()
+        ));
+    }
+    let top = git(&canonical, ["rev-parse", "--show-toplevel"], runner)?;
+    let top = PathBuf::from(top.trim())
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve source Git root: {error}"))?;
+    if top != canonical {
+        return Err("source checkout must be the Git worktree root".to_owned());
+    }
+    let resolved = git(
+        &canonical,
+        ["rev-parse", "--verify", &format!("{expected}^{{commit}}")],
+        runner,
+    )?;
+    if resolved.trim() != expected {
+        return Err("installed source commit is unavailable from the canonical checkout".into());
+    }
+    let ancestor = run_git_raw(
+        &canonical,
+        [
+            "merge-base",
+            "--is-ancestor",
+            expected,
+            "refs/remotes/origin/main",
+        ],
+        runner,
+    )?;
+    if !ancestor.success || ancestor.stdout_truncated || ancestor.stderr_truncated {
+        return Err(
+            "installed source commit is not retained in canonical origin/main history".into(),
+        );
+    }
+    Ok(expected.to_owned())
+}
+
 pub fn checkout_build_identity(source_root: &Path) -> Result<BuildIdentity, String> {
     let manifest = source_root.join("Cargo.toml");
     let metadata = manifest
