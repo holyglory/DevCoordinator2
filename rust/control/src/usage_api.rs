@@ -1838,7 +1838,7 @@ fn validate_projection(
             .try_fold(0u64, |sum, v| sum.checked_add(*v));
         if cost.basis != "api_equivalent"
             || cost.currency != "USD"
-            || cost.processing_tier != "standard"
+            || !matches!(cost.processing_tier.as_str(), "standard" | "mixed")
             || !matches!(cost.status.as_str(), "complete" | "partial" | "unavailable")
             || (cost.status == "complete"
                 && (components.iter().any(Option::is_none)

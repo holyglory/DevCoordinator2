@@ -748,6 +748,12 @@ fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
         "inputTokens":135,"uncachedInputTokens":135,"cachedInputTokens":0,"cacheWriteTokens":0,"outputTokens":0,"reasoningTokens":0,
         "providerTotalTokens":135,"pricedObservations":1,"unknownObservations":1,"rateCardRefs":["fixture-standard"]
     });
+    let mut mixed_source_cost = source_cost.clone();
+    mixed_source_cost["processingTier"] = json!("mixed");
+    let mut mixed = value.clone();
+    mixed["report"]["cost"] = mixed_source_cost;
+    let mixed_summary: Summary = serde_json::from_value(mixed).unwrap();
+    validate(&mixed_summary, Some(KEY), 10, 20).unwrap();
     let review_cost = serde_json::to_value(UsageCost {
         status: "partial".into(),
         basis: "api_equivalent".into(),
