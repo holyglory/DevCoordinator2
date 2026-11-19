@@ -2,7 +2,7 @@
 //! deletion continues through HostBackend and the storage job's native locks.
 use super::*;
 use crate::database::OptionalExtension;
-use crate::repository::GIT_AUDIT_OUTPUT_LIMIT;
+use crate::repository::{GIT_AUDIT_OUTPUT_LIMIT, PROCESS_OUTPUT_CAP};
 use crate::storage::db_error;
 use crate::storage::lifecycle::{BoundCheckout, CheckoutBinding, IntegrationProof};
 use devcoordinator2_api::project::cleanup::CheckoutEffect;
@@ -64,11 +64,41 @@ impl GitProbe {
             return Err(blocked(GIT_PENDING));
         }
         self.used = true;
-        // Complete staged listings scale with tracked paths, like worktree lists.
+        // Only complete inventories scale with repository contents. Identity
+        // and ancestry probes retain the generic bound, with overflow rejected.
         let limit = if worktrees || matches!(args, ["ls-files", "--stage", "-z"]) {
             WORKTREE_LIST_OUTPUT_LIMIT
-        } else {
+        } else if matches!(
+            args,
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+                | [
+                    "ls-files",
+                    "--others",
+                    "--ignored",
+                    "--exclude-standard",
+                    "-z"
+                ]
+                | [
+                    "for-each-ref",
+                    "--format=%(refname)%00%(objectname)",
+                    "refs/"
+                ]
+                | ["stash", "list", "--format=%H"]
+                | ["reflog", "show", "--all", "--format=%H%x00%gD%x00%gs"]
+                | ["reflog", "show", "--format=%H%x00%gD%x00%gs", "HEAD"]
+                | [
+                    "fsck",
+                    "--full",
+                    "--unreachable",
+                    "--no-reflogs",
+                    "--no-dangling",
+                    "--no-progress"
+                ]
+                | ["ls-remote", "--heads", "--tags", "--", "origin"]
+        ) {
             GIT_AUDIT_OUTPUT_LIMIT
+        } else {
+            PROCESS_OUTPUT_CAP
         };
         let result = git_bytes_with_stderr_limit(path, args, context, Some(limit));
         self.results.insert(
