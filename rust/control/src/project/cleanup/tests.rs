@@ -522,6 +522,41 @@ fn safe_checkout_removal_keeps_tasks_history_refs_and_canonical_source() {
 #[test]
 #[ignore = "requires a marked isolated root work area and explicit nonroot Git/PostgreSQL identities"]
 fn exact_console_approval_allows_known_loss_but_stale_content_requires_a_new_plan() {
+    for (count, minimum) in [(64, 64 * 1024), (1024, 1024 * 1024)] {
+        let large = CheckoutFixture::new();
+        let (retained, bytes) = ignored_listing_fixture(&large, count);
+        assert!(bytes > minimum);
+        assert!(bytes < crate::repository::GIT_AUDIT_OUTPUT_LIMIT);
+        let plan = large.plan();
+        assert!(plan.blockers.is_empty(), "{plan:?}");
+        assert!(!plan.targets[0].dirty);
+        assert_eq!(plan.targets[0].untracked_files, 0);
+        assert_eq!(plan.targets[0].ignored_files, count as u64);
+        assert!(plan.requires_approval && !plan.ready);
+        assert_eq!(
+            large
+                .service
+                .checkout_remove_start(large.start(&plan, None), &caller())
+                .unwrap_err()
+                .message,
+            "exact_data_loss_approval_required"
+        );
+        assert!(retained.is_file());
+        let approval = large.approve(&plan);
+        fs::write(&retained, "ignored bytes changed after approval\n").unwrap();
+        large.assert_rejected(large.start(&plan, Some(approval.receipt_id)));
+        assert!(retained.is_file());
+        let fresh = large.plan();
+        let approval = large.approve(&fresh);
+        assert!(
+            large
+                .execute(large.start(&fresh, Some(approval.receipt_id)))
+                .targets[0]
+                .fully_removed
+        );
+        assert!(!large.checkout.exists());
+        assert!(large.fixture.repository.join("source.txt").is_file());
+    }
     let fixture = CheckoutFixture::new();
     fs::write(
         fixture.checkout.join("source.txt"),
@@ -877,6 +912,15 @@ fn independent_clone_review_includes_every_local_ref_and_every_stash_entry() {
     assert!(fixture.fixture.repository.exists());
     let clean = CheckoutFixture::new();
     let clean_clone = independent_history_clone(&clean, "clean-preserved");
+    enlarge_reflog_message(&clean_clone.join(".git/logs/HEAD"));
+    assert!(
+        git(
+            &clean_clone,
+            &["reflog", "show", "--all", "--format=%H%x00%gD%x00%gs"]
+        )
+        .len()
+            > 64 * 1024
+    );
     let clean_plan = clean.plan();
     assert!(clean_plan.ready, "{clean_plan:?}");
     assert!(clean_plan.targets[0].reflog_entries > 0);
@@ -1965,6 +2009,82 @@ fn staged_listing_overflow_fails_without_a_removal_plan() {
         plans, 0,
         "an incomplete staged listing cannot enable approval"
     );
+
+    let ignored = CheckoutFixture::new();
+    let (retained, bytes) = ignored_listing_fixture(&ignored, 6144);
+    assert!(bytes > crate::repository::GIT_AUDIT_OUTPUT_LIMIT);
+    let review = queued_review(&ignored, "oversized-ignored-listing");
+    ignored
+        .storage
+        .execute_checkout_review_for_fixture(&review.job.job_id)
+        .unwrap();
+    let rejected = ignored
+        .service
+        .checkout_remove_plan_status(
+            removal::JobReference {
+                project_id: "product".into(),
+                job_id: review.job.job_id,
+            },
+            &caller(),
+        )
+        .unwrap();
+    assert!(matches!(rejected.job.state, storage_api::JobState::Failed));
+    assert_eq!(
+        rejected.job.error_code.as_deref(),
+        Some("git_baseline_unverified")
+    );
+    assert!(rejected.plan.is_none() && rejected.job.plan_id.is_none());
+    assert!(retained.is_file());
+    let plans = ignored
+        .fixture
+        .database
+        .read(|connection| {
+            connection
+                .query_row("SELECT count(*) FROM storage_plans", [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .map_err(DatabaseError::from)
+        })
+        .unwrap();
+    assert_eq!(
+        plans, 0,
+        "an incomplete ignored listing cannot enable approval"
+    );
+}
+
+fn ignored_listing_fixture(fixture: &CheckoutFixture, count: usize) -> (PathBuf, usize) {
+    let mut directory = fixture.checkout.join("ignored.bin");
+    for index in 0..5 {
+        directory.push(format!("segment-{index}-{}", "x".repeat(220)));
+    }
+    fs::create_dir_all(&directory).unwrap();
+    let mut retained = directory.clone();
+    for index in 0..count {
+        retained = directory.join(format!("entry-{index:04}-{}", "y".repeat(220)));
+        fs::write(&retained, "ignored fixture output\n").unwrap();
+    }
+    let bytes = git(
+        &fixture.checkout,
+        &[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+        ],
+    )
+    .len();
+    (retained, bytes)
+}
+
+fn enlarge_reflog_message(log: &Path) {
+    let original = fs::read_to_string(log).unwrap();
+    assert!(original.contains('\t'));
+    fs::write(
+        log,
+        original.replacen('\t', &format!("\t{}", "r".repeat(70 * 1024)), 1),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2088,7 +2208,16 @@ fn staged_only_change_with_unchanged_mm_status_invalidates_exact_loss_approval()
             "logs/HEAD",
         ],
     ));
-    assert!(fs::read_to_string(head_log).unwrap().contains(&old));
+    assert!(fs::read_to_string(&head_log).unwrap().contains(&old));
+    enlarge_reflog_message(&head_log);
+    assert!(
+        git(
+            &private.checkout,
+            &["reflog", "show", "--format=%H%x00%gD%x00%gs", "HEAD"]
+        )
+        .len()
+            > 64 * 1024
+    );
     let plan = private.plan();
     assert!(
         plan.targets[0]

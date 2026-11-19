@@ -2889,7 +2889,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct Fake {
         calls: Vec<&'static str>,
@@ -3174,6 +3174,9 @@ mod tests {
         upstream_commit: Option<String>,
         dirty_checkout: bool,
         dirty_checkout_after_stop: bool,
+        advanced_checkout: AtomicBool,
+        missing_source_commit: AtomicBool,
+        unretained_source_commit: AtomicBool,
         fail_ping: bool,
         backup_verification_failure: Option<crate::install::CommandOutput>,
         no_prior: bool,
@@ -3301,8 +3304,43 @@ mod tests {
                         } else {
                             String::new()
                         }
+                    } else if args
+                        == [
+                            "rev-parse",
+                            "--verify",
+                            &format!("{}^{{commit}}", self.commit),
+                        ]
+                    {
+                        if self.missing_source_commit.load(Ordering::SeqCst) {
+                            return Ok(crate::install::CommandOutput {
+                                success: false,
+                                stdout: String::new(),
+                                stderr: "fixture installed commit is missing".into(),
+                                stdout_truncated: false,
+                                stderr_truncated: false,
+                            });
+                        }
+                        self.commit.clone()
+                    } else if args
+                        == [
+                            "merge-base",
+                            "--is-ancestor",
+                            &self.commit,
+                            "refs/remotes/origin/main",
+                        ]
+                    {
+                        return Ok(crate::install::CommandOutput {
+                            success: !self.unretained_source_commit.load(Ordering::SeqCst),
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            stdout_truncated: false,
+                            stderr_truncated: false,
+                        });
                     } else if args == ["rev-parse", "HEAD"] {
                         pinned.map(str::to_owned).unwrap_or_else(|| {
+                            if self.advanced_checkout.load(Ordering::SeqCst) {
+                                return "e".repeat(40);
+                            }
                             self.checkout_commit
                                 .as_ref()
                                 .unwrap_or(&self.commit)
@@ -3355,11 +3393,15 @@ mod tests {
                             .collect::<Vec<_>>()
                             .join("\n")
                     } else if args == ["rev-parse", "refs/remotes/origin/main"] {
-                        self.upstream_commit
-                            .as_ref()
-                            .or(self.checkout_commit.as_ref())
-                            .unwrap_or(&self.commit)
-                            .clone()
+                        if self.advanced_checkout.load(Ordering::SeqCst) {
+                            "e".repeat(40)
+                        } else {
+                            self.upstream_commit
+                                .as_ref()
+                                .or(self.checkout_commit.as_ref())
+                                .unwrap_or(&self.commit)
+                                .clone()
+                        }
                     } else {
                         return Err("unexpected Git checkout fixture command".into());
                     };
@@ -4147,8 +4189,64 @@ mod tests {
         .unwrap();
         let pending_marker =
             std::fs::read(world.config.transaction_dir.join("retirement-pending.json")).unwrap();
+        for (fault, message) in [
+            (
+                &runner.missing_source_commit,
+                "fixture installed commit is missing",
+            ),
+            (
+                &runner.unretained_source_commit,
+                "not retained in canonical origin/main history",
+            ),
+        ] {
+            fault.store(true, Ordering::SeqCst);
+            let error =
+                finalize_host(&finalization, runner.as_ref(), world.expected_owner).unwrap_err();
+            assert!(error.contains(message), "{error}");
+            assert!(world.config.database_path.is_file());
+            assert!(Path::new(&receipt.backup).is_file());
+            assert_eq!(
+                std::fs::read(world.config.transaction_dir.join("retirement-pending.json"))
+                    .unwrap(),
+                pending_marker
+            );
+            assert!(
+                !world
+                    .config
+                    .transaction_dir
+                    .join("finalization.json")
+                    .exists()
+            );
+            fault.store(false, Ordering::SeqCst);
+        }
+        // Canonical main may advance while the installed candidate finishes
+        // acceptance. Finalization verifies its retained immutable commit.
+        runner.advanced_checkout.store(true, Ordering::SeqCst);
+        let commands_before_finalization = runner.requests.lock().unwrap().len();
         let finalized =
             finalize_host(&finalization, runner.as_ref(), world.expected_owner).unwrap();
+        let requests = runner.requests.lock().unwrap();
+        let source_probes = requests[commands_before_finalization..]
+            .iter()
+            .filter(|request| request.program == Path::new("/usr/bin/git"))
+            .map(|request| request.args[4..].to_vec())
+            .collect::<Vec<_>>();
+        let expected_source_probes: Vec<Vec<OsString>> = vec![
+            vec!["rev-parse".into(), "--show-toplevel".into()],
+            vec![
+                "rev-parse".into(),
+                "--verify".into(),
+                format!("{}^{{commit}}", world.commit).into(),
+            ],
+            vec![
+                "merge-base".into(),
+                "--is-ancestor".into(),
+                world.commit.clone().into(),
+                "refs/remotes/origin/main".into(),
+            ],
+        ];
+        assert_eq!(source_probes, expected_source_probes);
+        drop(requests);
         assert_eq!(finalized.status, "finalized");
         assert_eq!(finalized.retired_sources, 2);
         assert!(!world.config.database_path.exists());
