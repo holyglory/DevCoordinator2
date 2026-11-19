@@ -27,6 +27,10 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
 const PROCESS_OUTPUT_CAP: usize = 64 * 1024;
 pub(crate) const WORKTREE_LIST_OUTPUT_LIMIT: usize = 1024 * 1024;
+/// Native checkout reviews inspect complete bounded Git inventories, reflogs,
+/// ignored-file lists and remote refs. Keep these observations finite while
+/// allowing ordinary real repositories to exceed the generic command cap.
+pub(crate) const GIT_AUDIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const GIT_ERROR_CAP: usize = 512;
 const EXEC_PATH: &str = "/usr/bin:/bin";
 
