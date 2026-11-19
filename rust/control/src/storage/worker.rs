@@ -1053,7 +1053,7 @@ impl StorageService {
         Ok(())
     }
 
-    #[cfg(feature = "test-fixtures")]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn execute_checkout_review_for_fixture(&self, id: &str) -> Result<(), ProtocolError> {
         self.execute_queued_job_for_fixture(id)
     }

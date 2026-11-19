@@ -2,6 +2,7 @@
 //! deletion continues through HostBackend and the storage job's native locks.
 use super::*;
 use crate::database::OptionalExtension;
+use crate::repository::GIT_AUDIT_OUTPUT_LIMIT;
 use crate::storage::db_error;
 use crate::storage::lifecycle::{BoundCheckout, CheckoutBinding, IntegrationProof};
 use devcoordinator2_api::project::cleanup::CheckoutEffect;
@@ -64,11 +65,12 @@ impl GitProbe {
         }
         self.used = true;
         // Complete staged listings scale with tracked paths, like worktree lists.
-        let result = if worktrees || matches!(args, ["ls-files", "--stage", "-z"]) {
-            git_bytes_with_stderr_limit(path, args, context, Some(WORKTREE_LIST_OUTPUT_LIMIT))
+        let limit = if worktrees || matches!(args, ["ls-files", "--stage", "-z"]) {
+            WORKTREE_LIST_OUTPUT_LIMIT
         } else {
-            git_bytes_with_stderr(path, args, context)
+            GIT_AUDIT_OUTPUT_LIMIT
         };
+        let result = git_bytes_with_stderr_limit(path, args, context, Some(limit));
         self.results.insert(
             key,
             match &result {
