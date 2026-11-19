@@ -80,6 +80,25 @@ fn legacy_candidate_origins_backfill_stable_ids_without_rewriting_history() {
     let history = origin_history(&database);
     let existing = worktree_rows(&database);
     database.migrate().unwrap();
+    database
+        .read::<_, Error, _>(|c| {
+            let columns = c
+                .prepare("SELECT column_name FROM information_schema.columns WHERE table_name='project_sources' AND column_name LIKE 'github_observation_%' ORDER BY column_name")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            assert_eq!(
+                columns,
+                vec![
+                    "github_observation_job_id",
+                    "github_observation_last_success",
+                    "github_observation_state",
+                    "github_observation_url",
+                ],
+                "refresh projection migration adds only its nullable current-observation columns"
+            );
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(origin_history(&database), history);
     database.read::<_,Error,_>(|c|{
         let row=c.query_row("SELECT repository_id,worktree_path,registered_at,last_seen_at FROM worktrees WHERE worktree_id='w1111111111111111'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)))?;

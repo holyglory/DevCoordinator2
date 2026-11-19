@@ -61,6 +61,7 @@ struct Cursor {
 const SOURCE_VISIBLE: &str = "EXISTS(SELECT 1 FROM project_repository_memberships m WHERE m.project_id=s.project_id AND m.repository_id=s.repository_id AND ($2::jsonb IS NULL OR m.physical_repository_id IN (SELECT jsonb_array_elements_text($2::jsonb))))";
 const BRANCH_VISIBLE: &str = "EXISTS(SELECT 1 FROM project_repository_memberships m WHERE m.project_id=b.project_id AND m.repository_id=b.repository_id AND ($2::jsonb IS NULL OR m.physical_repository_id IN (SELECT jsonb_array_elements_text($2::jsonb)))) AND (b.remote_present IS TRUE OR EXISTS(SELECT 1 FROM project_branch_observations o WHERE o.project_id=b.project_id AND o.branch_id=b.branch_id AND ($2::jsonb IS NULL OR o.physical_repository_id IN (SELECT jsonb_array_elements_text($2::jsonb)))))";
 const BRANCH_HEAD: &str = "coalesce((SELECT o.head FROM project_branch_observations o WHERE o.project_id=b.project_id AND o.branch_id=b.branch_id AND ($2::jsonb IS NULL OR o.physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) ORDER BY o.local_present DESC,o.observed_at DESC,o.physical_repository_id LIMIT 1),b.remote_head)";
+const REFRESH_ALIAS_LIMIT: usize = 256;
 
 impl ProjectService {
     pub fn new(database: Database, registry: Registry) -> Self {
@@ -481,14 +482,28 @@ impl ProjectService {
         let actor = caller.actor();
         let job=self.database.transaction(|c|{
             summary(c,&p.project_id,&scope)?;
-            if let Some(job)=load_job_optional(c,&p.project_id,None,Some((&p.idempotency_key,"refresh")))?{return Ok(job);}
+            // Serialize only admission for this project. Locking the project
+            // row would invert the refresh worker's job -> project lock order.
+            c.query_row("SELECT pg_advisory_xact_lock(hashtextextended('project-refresh:'||$1,0))",[&p.project_id],|_|Ok(()))?;
+            if let Some(job)=refresh_job_for_key(c,&p.project_id,&p.idempotency_key,&actor,&scope,p.include_remote)? {
+                return Ok(job);
+            }
             // Each observer refreshes only its authorized physical repositories.
-            let physical=c.prepare("SELECT physical_repository_id FROM project_repository_memberships WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) ORDER BY physical_repository_id LIMIT 257")?.query_map(params![p.project_id,scope.visible_json()],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
+            let physical=c.prepare("SELECT DISTINCT physical_repository_id FROM project_repository_memberships WHERE project_id=$1 AND ($2::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) ORDER BY physical_repository_id LIMIT 257")?.query_map(params![p.project_id,scope.visible_json()],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
             if physical.len()>256{return Err(invalid("refresh supports at most 256 physical repositories per project").into());}
             ensure_not_relocating(c,&physical)?;
+            let authorized=json(&physical)?;
+            let shared=c.query_row("SELECT job_id,cursor IS NOT NULL FROM project_jobs WHERE project_id=$1 AND kind='refresh' AND state IN('queued','running') AND include_remote=$2 AND authorized_repositories@>$3::jsonb AND authorized_repositories<@$3::jsonb AND coalesce(jsonb_array_length(cursor::jsonb->'refresh_request_aliases'),0)<$4 ORDER BY CASE WHEN state='running' THEN 0 ELSE 1 END,queued_at,job_id LIMIT 1 FOR UPDATE",params![p.project_id,p.include_remote,authorized,REFRESH_ALIAS_LIMIT as i64],|r|Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?))).optional()?;
+            if let Some((shared,has_cursor))=shared {
+                let seed=if has_cursor {None}else{Some(refresh::admission_cursor(c,&p.project_id,&physical,p.include_remote)?)};
+                let alias=json(&serde_json::json!({"key":p.idempotency_key,"actor":actor}))?;
+                c.execute("UPDATE project_jobs SET cursor=jsonb_set(coalesce(cursor::jsonb,$2::jsonb),'{refresh_request_aliases}',coalesce(cursor::jsonb->'refresh_request_aliases','[]'::jsonb)||jsonb_build_array($3::jsonb))::text,revision=revision+1 WHERE job_id=$1",params![shared,seed,alias])?;
+                return load_job_optional(c,&p.project_id,Some(&shared),None)?.ok_or_else(not_found_db);
+            }
             let pending=c.query_row("SELECT count(*) FROM project_jobs WHERE project_id=$1 AND state IN('queued','running')",[&p.project_id],|r|r.get::<_,i64>(0))?;
             if pending>=8{return Err(ProtocolError::new(ErrorCode::Busy,"project already has eight pending refreshes").into());}
-            c.execute("INSERT INTO project_jobs(job_id,project_id,kind,idempotency_key,state,include_remote,authorized_repositories,queued_at,actor) VALUES($1,$2,'refresh',$3,'queued',$4,$5::jsonb,$6,$7)",params![id,p.project_id,p.idempotency_key,p.include_remote,json(&physical)?,now,actor])?;
+            let cursor=refresh::admission_cursor(c,&p.project_id,&physical,p.include_remote)?;
+            c.execute("INSERT INTO project_jobs(job_id,project_id,kind,idempotency_key,state,include_remote,authorized_repositories,cursor,queued_at,actor) VALUES($1,$2,'refresh',$3,'queued',$4,$5::jsonb,$6,$7,$8)",params![id,p.project_id,p.idempotency_key,p.include_remote,authorized,cursor,now,actor])?;
             load_job_optional(c,&p.project_id,Some(&id),None)?.ok_or_else(not_found_db)
         }).map_err(database_error)?;
         self.wake.notify_one();
@@ -771,6 +786,27 @@ fn load_job_optional(
         Ok(job)
     })
     .transpose()
+}
+fn refresh_job_for_key(
+    c: &Connection,
+    project: &str,
+    key: &str,
+    actor: &str,
+    scope: &Scope,
+    include_remote: bool,
+) -> Result<Option<api::Job>, DatabaseError> {
+    let row=c.query_row("SELECT job_id,($4::jsonb IS NULL OR (authorized_repositories<@$4::jsonb AND authorized_repositories@>$4::jsonb)) AND include_remote=$5 AND ((idempotency_key=$2 AND actor=$3) OR coalesce(cursor::jsonb->'refresh_request_aliases','[]'::jsonb)@>jsonb_build_array(jsonb_build_object('key',$2::text,'actor',$3::text))) FROM project_jobs WHERE project_id=$1 AND kind='refresh' AND (idempotency_key=$2 OR coalesce(cursor::jsonb->'refresh_request_aliases','[]'::jsonb)@>jsonb_build_array(jsonb_build_object('key',$2::text))) ORDER BY queued_at DESC LIMIT 1",params![project,key,actor,scope.visible_json(),include_remote],|r|Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?))).optional()?;
+    let Some((id, permitted)) = row else {
+        return Ok(None);
+    };
+    if !permitted {
+        return Err(ProtocolError::new(
+            ErrorCode::ConfigurationConflict,
+            "refresh key belongs to another actor, scope or remote intent",
+        )
+        .into());
+    }
+    load_job_optional(c, project, Some(&id), None)
 }
 fn empty_checkout(
     id: &str,

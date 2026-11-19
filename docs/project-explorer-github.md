@@ -7,10 +7,19 @@ refresh even when the cache is fresh; a refresh failure preserves previously
 observed branches and reports the coverage gap. A failed or inaccessible remote
 request is never evidence that a ref was removed.
 
-`Repository.github_observation` identifies the latest remote-refresh job and
-whether its complete GitHub branch list is `fresh`, `refreshing` or `failed`.
+`Repository.github_observation` identifies the actual remote attempt that
+produced its `fresh`, `refreshing` or `failed` branch-list state. A queued job
+has not made an observation: copied queue seeds and uninitialized cursors do
+not replace the known receipt. The project-level `refreshing` flag still shows
+that background work is pending. Equivalent pending refreshes share work only
+for the same authorized repository set and remote intent; each caller's key
+remains bound to that caller and the original request.
 Its `last_success` is the last complete list for the currently configured GitHub
-repository. A failed later request keeps that timestamp and cached branches but
+repository. During `refreshing` or `failed`, `job_id` names that actual attempt
+while `last_success` remains historical; it is not a claim that the attempt
+completed successfully. Queue admission never renews that timestamp, including
+when the old evidence has expired for a consumer's freshness requirement.
+A failed later request keeps that timestamp and cached branches but
 reports `failed`; an incomplete page scan never creates a successful receipt.
 Local-copy inspection and pull-request proof failures remain in the combined
 source status without invalidating a complete branch-list observation. These
