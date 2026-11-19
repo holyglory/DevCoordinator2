@@ -111,6 +111,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "legacy_generation_origin_worktrees",
         include_str!("../migrations/0021_legacy_generation_origin_worktrees.sql"),
     ),
+    (
+        22,
+        "project_refresh_observation",
+        include_str!("../migrations/0022_project_refresh_observation.sql"),
+    ),
 ];
 
 pub fn migrate(database: &Persistence) -> Result<()> {

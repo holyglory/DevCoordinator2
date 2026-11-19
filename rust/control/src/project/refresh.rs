@@ -114,31 +114,17 @@ impl ProjectService {
             return Ok(0);
         };
         if p.remote && !p.cursor.observations_initialized {
-            // Carry the bounded source projection forward once, from the
-            // previous terminal remote job. Status reads never search history.
-            p.cursor.remote_branch_observations = self.database.read(|c| {
-                let mut observations = load_remote_observations(c, &p.project, true)?;
-                let current = c.prepare("SELECT repository_id FROM project_sources WHERE project_id=$1 LIMIT 129")?.query_map([&p.project], |r| r.get::<_,String>(0))?.collect::<crate::database::Result<BTreeSet<_>>>()?;
-                observations.retain(|source, _| current.contains(source));
-                Ok(observations)
-            }).map_err(database_error)?;
-            for (source, url) in self.remote_sources(&p)? {
-                if let Some(github_url) = url {
-                    let last_success = p
-                        .cursor
-                        .remote_branch_observations
-                        .get(&source)
-                        .filter(|row| row.github_url == github_url)
-                        .and_then(|row| row.last_success.clone());
-                    p.cursor.remote_branch_observations.insert(
-                        source,
-                        RemoteBranchObservation {
-                            github_url,
-                            job_id: p.id.clone(),
-                            state: "refreshing".into(),
-                            last_success,
-                        },
-                    );
+            // Admission copies known evidence without claiming a new attempt.
+            // Worker start gives this attempt its identity and pending state.
+            let sources = self.remote_sources(&p)?;
+            initialize_remote_projection(&self.database, &p, &sources)?;
+            for (source, url) in sources {
+                if let Some(github_url) = url
+                    && let Some(observation) = p.cursor.remote_branch_observations.get_mut(&source)
+                    && observation.github_url == github_url
+                {
+                    observation.job_id = p.id.clone();
+                    observation.state = "refreshing".into();
                 }
             }
             p.cursor.observations_initialized = true;
@@ -195,6 +181,9 @@ impl ProjectService {
             };
             self.database.transaction(|c|{
                 if p.cursor.physical<p.physical.len(){let physical=&p.physical[p.cursor.physical];c.execute("UPDATE project_sources SET refresh_state='failed',error=$3 WHERE project_id=$1 AND repository_id=(SELECT repository_id FROM project_repository_memberships WHERE project_id=$1 AND physical_repository_id=$2)",params![p.project,physical,code])?;}
+                if p.cursor.physical>=p.physical.len() && p.cursor.stage!="pull_requests" && let Some((source,Some(url)))=self.remote_sources(&p)?.get(p.cursor.remote_source) {
+                    c.execute("UPDATE project_sources SET github_observation_job_id=$3,github_observation_state='failed',github_observation_url=$4 WHERE project_id=$1 AND repository_id=$2",params![p.project,source,p.id,url])?;
+                }
                 c.execute("UPDATE project_jobs SET error=$2 WHERE job_id=$1",params![p.id,code])?;Ok(())
             }).map_err(database_error)?;
             if p.cursor.physical < p.physical.len() {
@@ -213,10 +202,19 @@ impl ProjectService {
             && (!p.remote || p.cursor.remote_source >= sources.len());
         let now = timestamp();
         self.database.transaction(|c|{
-            c.execute("UPDATE project_jobs SET cursor=$2,state=$3,finished_at=$4,error=coalesce(error,$5),revision=revision+1 WHERE job_id=$1",params![p.id,json(&p.cursor)?,if finished {if p.cursor.had_error{"partial"}else{"succeeded"}}else{"running"},finished.then_some(now.clone()),p.cursor.had_error.then_some("source refresh unavailable; previous observations retained")])?;
+            // Admission may attach another request while Git/HTTP work is in
+            // flight. Preserve those durable aliases from the current row,
+            // not the worker's earlier cursor snapshot.
+            c.execute("UPDATE project_jobs SET cursor=jsonb_set($2::jsonb,'{refresh_request_aliases}',coalesce(cursor::jsonb->'refresh_request_aliases','[]'::jsonb))::text,state=$3,finished_at=$4,error=coalesce(error,$5),revision=revision+1 WHERE job_id=$1",params![p.id,json(&p.cursor)?,if finished {if p.cursor.had_error{"partial"}else{"succeeded"}}else{"running"},finished.then_some(now.clone()),p.cursor.had_error.then_some("source refresh unavailable; previous observations retained")])?;
             if finished {
                 for (source,_) in &sources {
-                    if p.cursor.failed_sources.contains(source){c.execute("UPDATE project_sources SET refresh_state='failed',error='One or more source observations failed; previous data retained' WHERE project_id=$1 AND repository_id=$2",params![p.project,source])?;}
+                    if p.cursor.failed_sources.contains(source){
+                        if p.cursor.remote_branch_observations.get(source).is_some_and(|observation| observation.state == "fresh") {
+                            c.execute("UPDATE project_sources SET refresh_state='failed',error='One or more source observations failed; previous data retained' WHERE project_id=$1 AND repository_id=$2",params![p.project,source])?;
+                        } else {
+                            c.execute("UPDATE project_sources SET refresh_state='failed',github_observation_job_id=$3,github_observation_state='failed',error='One or more source observations failed; previous data retained' WHERE project_id=$1 AND repository_id=$2",params![p.project,source,p.id])?;
+                        }
+                    }
                     else {c.execute("UPDATE project_sources SET last_success=$3,error=NULL WHERE project_id=$1 AND repository_id=$2",params![p.project,source,now])?;}
                 }
                 c.execute("UPDATE projects SET refreshed_at=$2 WHERE project_id=$1",params![p.project,now])?;
@@ -762,7 +760,7 @@ impl ProjectService {
                 if page.complete {
                     let absent=c.prepare("SELECT record_json::text FROM project_branches b WHERE project_id=$1 AND repository_id=$2 AND NOT EXISTS(SELECT 1 FROM project_remote_observations o WHERE o.job_id=$3 AND o.repository_id=b.repository_id AND o.branch_name=b.branch_name) LIMIT 4097")?.query_map(params![p.project,source,p.id],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
                     for raw in absent{let mut row:api::Branch=from_json(&raw)?;row.remote_present=Some(false);row.revision+=1;persist_branch(c,&p.project,&row,&now,&p.actor)?;}
-                    c.execute("UPDATE project_sources SET refresh_state='fresh' WHERE project_id=$1 AND repository_id=$2",params![p.project,source])?;
+                    c.execute("UPDATE project_sources SET refresh_state='fresh',github_observation_job_id=$3,github_observation_state='fresh',github_observation_last_success=$4,github_observation_url=$5 WHERE project_id=$1 AND repository_id=$2",params![p.project,source,p.id,now,url])?;
                 }
                 observed(c,&p.project,&p.actor,&now)
             }).map_err(database_error)?;
@@ -1021,59 +1019,86 @@ pub(super) fn github_observation(
     let Some(url) = github_url else {
         return Ok(None);
     };
-    let job = c.query_row("SELECT job_id,state,cursor FROM project_jobs j WHERE project_id=$1 AND kind='refresh' AND include_remote AND EXISTS(SELECT 1 FROM project_repository_memberships m WHERE m.project_id=j.project_id AND m.repository_id=$2 AND m.physical_repository_id IN(SELECT jsonb_array_elements_text(j.authorized_repositories))) ORDER BY queued_at DESC,job_id DESC LIMIT 1",params![project,source],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).optional()?;
-    let Some((job_id, state, cursor)) = job else {
+    let row = c.query_row("SELECT s.github_observation_job_id,s.github_observation_state,s.github_observation_last_success,s.github_observation_url,j.kind,j.include_remote,j.authorized_repositories::text FROM project_sources s LEFT JOIN project_jobs j ON j.job_id=s.github_observation_job_id WHERE s.project_id=$1 AND s.repository_id=$2",params![project,source],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<bool>>(5)?,r.get::<_,Option<String>>(6)?))).optional()?;
+    let Some((job_id, state, last_success, observed_url, kind, include_remote, authorized)) = row
+    else {
         return Ok(None);
     };
-    let cursor: RefreshCursor = cursor
-        .as_deref()
-        .map(from_json)
+    let Some(job_id) = job_id else {
+        return Ok(None);
+    };
+    if observed_url.as_deref() != Some(url)
+        || kind.as_deref() != Some("refresh")
+        || include_remote != Some(true)
+        || !matches!(
+            state.as_deref(),
+            Some("refreshing") | Some("fresh") | Some("failed")
+        )
+    {
+        return Ok(None);
+    }
+    let authorized: Vec<String> = authorized
+        .map(|raw| from_json(&raw))
         .transpose()?
         .unwrap_or_default();
-    let observed = cursor
-        .remote_branch_observations
-        .get(source)
-        .filter(|observation| observation.github_url == url);
-    let (state, last_success) = observed
-        .map(|observation| (observation.state.clone(), observation.last_success.clone()))
-        .unwrap_or_else(|| {
-            (
-                if matches!(state.as_str(), "queued" | "running") {
-                    "refreshing".into()
-                } else {
-                    "failed".into()
-                },
-                None,
-            )
-        });
+    let physical=c.prepare("SELECT physical_repository_id FROM project_repository_memberships WHERE project_id=$1 AND repository_id=$2")?.query_map(params![project,source],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
+    if physical
+        .iter()
+        .any(|id| !authorized.iter().any(|allowed| allowed == id))
+    {
+        return Ok(None);
+    }
     Ok(Some(api::GithubObservation {
         job_id,
-        state,
+        state: state.unwrap(),
         last_success,
     }))
 }
 
-fn load_remote_observations(
+fn initialize_remote_projection(
+    database: &Database,
+    p: &Pending,
+    sources: &[(String, Option<String>)],
+) -> Result<(), ProtocolError> {
+    database.transaction(|c| {
+        for (source,url) in sources {
+            let Some(url)=url else {continue;};
+            c.execute("UPDATE project_sources SET github_observation_job_id=$3,github_observation_state='refreshing',github_observation_url=$4,github_observation_last_success=CASE WHEN github_observation_url=$4 THEN github_observation_last_success ELSE NULL END WHERE project_id=$1 AND repository_id=$2",params![p.project,source,p.id,url])?;
+        }
+        Ok(())
+    }).map_err(database_error)
+}
+
+pub(super) fn admission_cursor(
     c: &Connection,
     project: &str,
-    terminal_only: bool,
-) -> Result<BTreeMap<String, RemoteBranchObservation>, DatabaseError> {
-    let state_filter = if terminal_only {
-        "AND state IN ('succeeded','partial','failed')"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT cursor::text FROM project_jobs WHERE project_id=$1 AND kind='refresh' AND include_remote {state_filter} ORDER BY coalesce(finished_at,queued_at) DESC,job_id DESC LIMIT 1"
-    );
-    let raw = c
-        .query_row(&sql, [project], |r| r.get::<_, Option<String>>(0))
-        .optional()?
-        .flatten();
-    let Some(raw) = raw else {
-        return Ok(BTreeMap::new());
-    };
-    Ok(from_json::<RefreshCursor>(&raw)?.remote_branch_observations)
+    physical: &[String],
+    include_remote: bool,
+) -> Result<String, DatabaseError> {
+    let mut cursor = RefreshCursor::default();
+    if include_remote {
+        let sources = c.prepare("SELECT s.repository_id,s.github_url FROM project_sources s WHERE s.project_id=$1 AND s.github_url IS NOT NULL AND EXISTS(SELECT 1 FROM project_repository_memberships m WHERE m.project_id=s.project_id AND m.repository_id=s.repository_id AND m.physical_repository_id IN(SELECT jsonb_array_elements_text($2::jsonb))) ORDER BY s.repository_id LIMIT 129")?.query_map(params![project,json(&physical)?],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<crate::database::Result<Vec<_>>>()?;
+        if sources.len() > 128 {
+            return Err(invalid("refresh supports at most 128 sources").into());
+        }
+        for (source, url) in sources {
+            let observed=c.query_row("SELECT github_observation_job_id,github_observation_state,github_observation_last_success,github_observation_url FROM project_sources WHERE project_id=$1 AND repository_id=$2",params![project,source],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?))).optional()?;
+            if let Some((Some(job_id), Some(state), last_success, Some(observed_url))) = observed
+                && observed_url == url
+            {
+                cursor.remote_branch_observations.insert(
+                    source,
+                    RemoteBranchObservation {
+                        github_url: url,
+                        job_id,
+                        state,
+                        last_success,
+                    },
+                );
+            }
+        }
+    }
+    json(&cursor)
 }
 fn bounded_measure(path: &Path, budget: &Budget) -> Option<crate::storage::fs::Measurement> {
     let remaining = budget.remaining().min(Duration::from_millis(250));

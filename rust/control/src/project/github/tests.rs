@@ -27,6 +27,7 @@ pub(in crate::project) struct Step {
     declared_length: Option<usize>,
     chunked: bool,
     response_gate: Option<Arc<tokio::sync::Notify>>,
+    response_started: Option<Arc<tokio::sync::Notify>>,
     expected_token: &'static str,
 }
 
@@ -42,6 +43,7 @@ impl Step {
             declared_length: None,
             chunked: false,
             response_gate: None,
+            response_started: None,
             expected_token: TOKEN,
         }
     }
@@ -52,6 +54,15 @@ impl Step {
     }
     pub(in crate::project) fn header(mut self, key: &str, value: impl Into<String>) -> Self {
         self.headers.push((key.into(), value.into()));
+        self
+    }
+    pub(in crate::project) fn gated(
+        mut self,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        self.response_started = Some(started);
+        self.response_gate = Some(release);
         self
     }
     fn body(mut self, value: &str) -> Self {
@@ -70,6 +81,7 @@ impl Step {
             declared_length: None,
             chunked: false,
             response_gate: None,
+            response_started: None,
             expected_token: TOKEN,
         }
     }
@@ -185,6 +197,9 @@ impl Fixture {
                     ));
                 }
                 response.push_str("\r\n");
+                if let Some(started) = step.response_started {
+                    started.notify_one();
+                }
                 if let Some(gate) = step.response_gate {
                     gate.notified().await;
                 }

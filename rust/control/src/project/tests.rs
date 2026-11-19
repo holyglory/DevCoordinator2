@@ -131,6 +131,203 @@ fn drain_refresh_kind(
     }
     panic!("refresh did not finish its bounded fixture inventory");
 }
+
+#[test]
+fn equivalent_refreshes_preserve_concurrent_request_keys_and_bounded_aliases() {
+    let fixture = Fixture::new();
+    initialize(&fixture.repository);
+    fixture
+        .database
+        .transaction(|c| {
+            c.execute(
+                "UPDATE repositories SET registered_by_uid=$1",
+                [caller().uid],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let service = ProjectService::new(
+        fixture.database.clone(),
+        Registry::new(fixture.database.clone()),
+    );
+    let mut input = source("project-alpha", &["project-alpha"]);
+    input.github_url = Some("https://github.com/fixture-owner/fixture-project".into());
+    let configured = configure(&service, &fixture, "Admission", vec![input]);
+    let project = configured.project.project_id;
+    let barrier = Arc::new(std::sync::Barrier::new(4));
+    let threads = (0..4)
+        .map(|index| {
+            let service = service.clone();
+            let project = project.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                service
+                    .refresh(
+                        api::Refresh {
+                            project_id: project,
+                            idempotency_key: format!("parallel-{index}"),
+                            include_remote: false,
+                        },
+                        &caller(),
+                    )
+                    .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    let jobs = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect::<Vec<_>>();
+    assert!(jobs.iter().all(|job| job.job_id == jobs[0].job_id));
+    let first = &jobs[0].job_id;
+    let duplicates = (0..4)
+        .map(|_| {
+            let service = service.clone();
+            let project = project.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                service
+                    .refresh(
+                        api::Refresh {
+                            project_id: project,
+                            idempotency_key: "same-key".into(),
+                            include_remote: false,
+                        },
+                        &caller(),
+                    )
+                    .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        duplicates
+            .into_iter()
+            .all(|thread| thread.join().unwrap().job_id == *first)
+    );
+    let refresh = |key: &str, include_remote| {
+        service.refresh(
+            api::Refresh {
+                project_id: project.clone(),
+                idempotency_key: key.into(),
+                include_remote,
+            },
+            &caller(),
+        )
+    };
+    fixture
+        .database
+        .transaction(|c| {
+            c.execute(
+                "UPDATE project_jobs SET state='running' WHERE job_id=$1",
+                [first],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(refresh("while-running", false).unwrap().job_id, *first);
+    let remote = refresh("remote-intent", true).unwrap();
+    assert_ne!(remote.job_id, *first);
+    assert!(refresh("while-running", true).is_err());
+    for _ in 0..8 {
+        service.refresh_step(&mut Budget::new(Duration::from_secs(10), 256, 1024 * 1024));
+        let current = service.status(reference(&project), &caller()).unwrap();
+        if current.repositories.iter().any(|row| {
+            row.github_observation
+                .as_ref()
+                .is_some_and(|observation| observation.job_id == remote.job_id)
+        }) {
+            break;
+        }
+    }
+    let status = service.status(reference(&project), &caller()).unwrap();
+    let github = status.repositories[0].github_observation.as_ref().unwrap();
+    assert_eq!(github.job_id, remote.job_id);
+    assert_eq!(github.state, "refreshing");
+    assert!(
+        github.last_success.is_none(),
+        "queue admission cannot invent a receipt"
+    );
+    assert_eq!(
+        drain_refresh(&service, &project, "parallel-0").job_id,
+        *first
+    );
+    for key in [
+        "parallel-0",
+        "parallel-1",
+        "parallel-2",
+        "parallel-3",
+        "same-key",
+        "while-running",
+    ] {
+        assert_eq!(refresh(key, false).unwrap().job_id, *first, "{key}");
+    }
+
+    let capacity = refresh("capacity-start", false).unwrap();
+    assert_ne!(
+        capacity.job_id, *first,
+        "completed work is not new pending work"
+    );
+    for index in 0..REFRESH_ALIAS_LIMIT {
+        assert_eq!(
+            refresh(&format!("capacity-{index}"), false).unwrap().job_id,
+            capacity.job_id
+        );
+    }
+    let overflow = refresh("capacity-overflow", false).unwrap();
+    assert_ne!(
+        overflow.job_id, capacity.job_id,
+        "full alias storage requires honest distinct work"
+    );
+    for key in ["capacity-start", "capacity-0", "capacity-255"] {
+        assert_eq!(
+            refresh(key, false).unwrap().job_id,
+            capacity.job_id,
+            "{key}"
+        );
+    }
+    assert_eq!(
+        refresh("capacity-overflow", false).unwrap().job_id,
+        overflow.job_id
+    );
+    let (actor, raw) = fixture
+        .database
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT actor,cursor FROM project_jobs WHERE job_id=$1",
+                [&capacity.job_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )?)
+        })
+        .unwrap();
+    let cursor: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let aliases = cursor["refresh_request_aliases"].as_array().unwrap();
+    assert_eq!(aliases.len(), REFRESH_ALIAS_LIMIT);
+    assert_eq!(actor, caller().actor());
+    assert!(
+        aliases
+            .iter()
+            .all(|alias| alias["actor"] == caller().actor())
+    );
+    let status = service.status(reference(&project), &caller()).unwrap();
+    let commits = service
+        .refresh_commits_page(
+            api::CommitRefresh {
+                project_id: project.clone(),
+                branch_id: status.branches[0].branch_id.clone(),
+                cursor: None,
+                idempotency_key: "commits-after-equivalent-refreshes".into(),
+            },
+            &caller(),
+        )
+        .unwrap();
+    assert_eq!(commits.kind, "commits");
+    assert_eq!(
+        commits.state, "queued",
+        "equivalent refreshes must leave admission room for visible history"
+    );
+}
 fn reference(id: &str) -> api::Reference {
     api::Reference {
         project_id: id.into(),
@@ -527,8 +724,10 @@ fn remote_pages_persist_and_keep_source_failures_independent() {
         .collect::<Vec<_>>();
     let root = "/repos/fixture-owner/fixture-project";
     let repository = json!({"owner":{"login":"fixture-owner"},"name":"fixture-project","default_branch":"main","node_id":"R_fixture"});
+    let response_started = Arc::new(tokio::sync::Notify::new());
+    let response_release = Arc::new(tokio::sync::Notify::new());
     let mut steps = vec![
-        Step::get(root, repository.clone()),
+        Step::get(root, repository.clone()).gated(response_started.clone(), response_release.clone()),
         Step::get(format!("{root}/branches?per_page=100&page=1"), json!(&rows[..100]))
             .header("Link", "<{origin}/repositories/42/branches?per_page=100&page=2>; rel=\"next\", <{origin}/repositories/42/branches?per_page=100&page=2>; rel=\"last\""),
         Step::get(format!("{root}/branches?per_page=100&page=2"), json!(&rows[100..]))
@@ -572,9 +771,49 @@ fn remote_pages_persist_and_keep_source_failures_independent() {
     fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o0)).unwrap();
     let remote = runtime.block_on(HttpFixture::start(steps));
     let service = service.with_github(remote.client());
-    let job = drain_refresh_kind(&service, project, "remote-complete", true);
+    let worker = {
+        let service = service.clone();
+        let project = project.clone();
+        std::thread::spawn(move || drain_refresh_kind(&service, &project, "remote-complete", true))
+    };
+    let entered = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), response_started.notified()).await
+    });
+    let shared = entered.is_ok().then(|| {
+        service.refresh(
+            api::Refresh {
+                project_id: project.clone(),
+                idempotency_key: "during-remote-read".into(),
+                include_remote: true,
+            },
+            &caller(),
+        )
+    });
+    response_release.notify_one();
+    let finished = worker.join();
     fs::set_permissions(&snapshot, permissions).unwrap();
+    if entered.is_err() {
+        drop(remote);
+        panic!("remote worker did not reach the gated HTTP boundary: {finished:?}");
+    }
+    let job = finished.unwrap();
     runtime.block_on(remote.finish());
+    assert_eq!(shared.unwrap().unwrap().job_id, job.job_id);
+    assert_eq!(
+        service
+            .refresh(
+                api::Refresh {
+                    project_id: project.clone(),
+                    idempotency_key: "during-remote-read".into(),
+                    include_remote: true
+                },
+                &caller()
+            )
+            .unwrap()
+            .job_id,
+        job.job_id,
+        "worker persistence must retain an alias admitted during HTTP"
+    );
     assert_eq!(
         job.state, "partial",
         "the separate missing source stays unavailable"
@@ -605,6 +844,73 @@ fn remote_pages_persist_and_keep_source_failures_independent() {
         branches
             .iter()
             .all(|branch| branch.remote_present == Some(true))
+    );
+
+    let pending = service
+        .refresh(
+            api::Refresh {
+                project_id: project.clone(),
+                idempotency_key: "remote-unavailable".into(),
+                include_remote: true,
+            },
+            &caller(),
+        )
+        .unwrap();
+    let queued = service.status(reference(project), &caller()).unwrap();
+    let queued_github = queued
+        .repositories
+        .iter()
+        .find(|row| row.repository_id == "project-alpha")
+        .unwrap()
+        .github_observation
+        .as_ref()
+        .unwrap();
+    assert!(queued.refreshing);
+    assert_eq!(
+        queued_github.job_id, github.job_id,
+        "a copied queue seed is not a new receipt"
+    );
+    assert_eq!(queued_github.state, "fresh");
+    assert_eq!(queued_github.last_success, github.last_success);
+    // Existing deployments may already contain queued/running null cursors.
+    fixture
+        .database
+        .transaction(|c| {
+            c.execute(
+                "UPDATE project_jobs SET cursor=NULL,state='running' WHERE job_id=$1",
+                [&pending.job_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let legacy = service.status(reference(project), &caller()).unwrap();
+    assert_eq!(
+        legacy
+            .repositories
+            .iter()
+            .find(|row| row.repository_id == "project-alpha")
+            .unwrap()
+            .github_observation
+            .as_ref()
+            .unwrap()
+            .job_id,
+        github.job_id
+    );
+    service.refresh_step(&mut Budget::new(Duration::from_secs(10), 256, 1024 * 1024));
+    let started = service.status(reference(project), &caller()).unwrap();
+    let attempt = started
+        .repositories
+        .iter()
+        .find(|row| row.repository_id == "project-alpha")
+        .unwrap()
+        .github_observation
+        .as_ref()
+        .unwrap();
+    assert_eq!(attempt.job_id, pending.job_id);
+    assert_eq!(attempt.state, "refreshing");
+    assert_eq!(
+        attempt.last_success, github.last_success,
+        "an attempt retains historical success without renewing it"
     );
     assert_eq!(
         branches
@@ -651,6 +957,61 @@ fn remote_pages_persist_and_keep_source_failures_independent() {
         all_branches(&service, project)
             .iter()
             .all(|b| b.remote_present == Some(true))
+    );
+    let expired = "2000-01-01T00:00:00Z";
+    let actual_receipt = stale_github.job_id.clone();
+    fixture.database.transaction(|c| {
+        c.execute("UPDATE project_jobs SET cursor=jsonb_set(cursor::jsonb,ARRAY['remote_branch_observations','project-alpha','last_success'],to_jsonb($2::text))::text WHERE job_id=$1",params![actual_receipt,expired])?;
+        c.execute("UPDATE project_sources SET github_observation_job_id=$3,github_observation_state='failed',github_observation_last_success=$2,github_observation_url='https://github.com/fixture-owner/fixture-project' WHERE project_id=$1 AND repository_id='project-alpha'",params![project,expired,actual_receipt])?;
+        for (index,state) in ["queued","running","queued"].into_iter().enumerate() {
+            c.execute("INSERT INTO project_jobs(job_id,project_id,kind,idempotency_key,state,include_remote,authorized_repositories,cursor,queued_at,actor) SELECT $1,project_id,'refresh',$2,$3,true,authorized_repositories,NULL,'2999-01-01T00:00:00Z',actor FROM project_jobs WHERE job_id=$4",params![format!("legacy-pending-{index}"),format!("legacy-key-{index}"),state,actual_receipt])?;
+        }
+        Ok(())
+    }).unwrap();
+    let shared = service
+        .refresh(
+            api::Refresh {
+                project_id: project.clone(),
+                idempotency_key: "legacy-share".into(),
+                include_remote: true,
+            },
+            &caller(),
+        )
+        .unwrap();
+    assert_eq!(
+        shared.job_id, "legacy-pending-1",
+        "reuse an equivalent running job before queued placeholders"
+    );
+    let preserved = service.status(reference(project), &caller()).unwrap();
+    let observed = preserved
+        .repositories
+        .iter()
+        .find(|row| row.repository_id == "project-alpha")
+        .unwrap()
+        .github_observation
+        .as_ref()
+        .unwrap();
+    assert_eq!(observed.job_id, actual_receipt);
+    assert_eq!(observed.state, "failed");
+    assert_eq!(
+        observed.last_success.as_deref(),
+        Some(expired),
+        "admission must not renew expired evidence"
+    );
+    fixture.database.transaction(|c| {
+        c.execute("UPDATE project_sources SET github_url='https://github.com/fixture-owner/different-project' WHERE project_id=$1 AND repository_id='project-alpha'",[project])?;
+        Ok(())
+    }).unwrap();
+    let changed = service.status(reference(project), &caller()).unwrap();
+    assert!(
+        changed
+            .repositories
+            .iter()
+            .find(|row| row.repository_id == "project-alpha")
+            .unwrap()
+            .github_observation
+            .is_none(),
+        "another remote cannot inherit this receipt"
     );
 }
 
@@ -945,17 +1306,91 @@ fn viewer_operator_admin_and_clone_isolation_apply_to_every_cached_projection() 
             .code,
         ErrorCode::PermissionDenied
     );
+    let refresh_request = |key: &str| api::Refresh {
+        project_id: product.project.project_id.clone(),
+        idempotency_key: key.into(),
+        include_remote: false,
+    };
+    let viewer_job = service
+        .refresh(refresh_request("viewer-refresh"), &viewer)
+        .unwrap();
+    let operator_job = service
+        .refresh(refresh_request("operator-refresh"), &operator)
+        .unwrap();
+    assert_eq!(
+        operator_job.job_id, viewer_job.job_id,
+        "equivalent authorized sources share work without replacing the owner"
+    );
     assert!(
         service
-            .refresh(
-                api::Refresh {
-                    project_id: product.project.project_id.clone(),
-                    idempotency_key: "viewer-refresh".into(),
-                    include_remote: false
-                },
-                &viewer
-            )
-            .is_ok()
+            .refresh(refresh_request("viewer-refresh"), &operator)
+            .is_err(),
+        "a visible scope does not transfer another actor's primary key"
+    );
+    assert!(
+        service
+            .refresh(refresh_request("operator-refresh"), &viewer)
+            .is_err(),
+        "the job owner does not own another actor's alias key"
+    );
+    let admin_job = service
+        .refresh(refresh_request("admin-refresh"), &admin)
+        .unwrap();
+    assert_ne!(
+        admin_job.job_id, viewer_job.job_id,
+        "a broader scope requires distinct work"
+    );
+    assert!(
+        service
+            .refresh(refresh_request("admin-refresh"), &viewer)
+            .is_err()
+    );
+    let (actor, raw) = fixture
+        .database
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT actor,cursor FROM project_jobs WHERE job_id=$1",
+                [&viewer_job.job_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(actor, viewer.actor());
+    let aliases: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(
+        aliases["refresh_request_aliases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|alias| alias["key"] == "operator-refresh" && alias["actor"] == operator.actor())
+    );
+    fixture.database.transaction(|c| {
+        c.execute("DELETE FROM grants WHERE user_id='viewer'",[])?;
+        c.execute_batch("INSERT INTO grants(user_id,deployment_id,role,granted_at,granted_by) VALUES('viewer','private-deployment','viewer','t','fixture');")?;
+        Ok(())
+    }).unwrap();
+    assert!(
+        service
+            .refresh(refresh_request("viewer-refresh"), &viewer)
+            .is_err(),
+        "changed visibility cannot replay the old source scope"
+    );
+    let private_job = service
+        .refresh(refresh_request("viewer-private"), &viewer)
+        .unwrap();
+    assert_ne!(private_job.job_id, viewer_job.job_id);
+    assert_ne!(private_job.job_id, admin_job.job_id);
+    fixture.database.transaction(|c| {
+        c.execute("DELETE FROM grants WHERE user_id='viewer'",[])?;
+        c.execute_batch("INSERT INTO grants(user_id,deployment_id,role,granted_at,granted_by) VALUES('viewer','public-deployment','viewer','t','fixture');")?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(
+        service
+            .refresh(refresh_request("viewer-refresh"), &viewer)
+            .unwrap()
+            .job_id,
+        viewer_job.job_id
     );
     fixture
         .database
