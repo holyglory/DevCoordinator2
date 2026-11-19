@@ -44,7 +44,7 @@
           "en/shell.json"
         ],
         "auth": [
-          "en/auth.json"
+          "en/auth-messages.json"
         ],
         "deployments": [
           "en/deployments.json"
@@ -115,7 +115,7 @@
           "sq/shell.json"
         ],
         "auth": [
-          "sq/auth.json"
+          "sq/auth-messages.json"
         ],
         "deployments": [
           "sq/deployments.json"
@@ -180,7 +180,7 @@
           "ca/shell.json"
         ],
         "auth": [
-          "ca/auth.json"
+          "ca/auth-messages.json"
         ],
         "deployments": [
           "ca/deployments.json"
@@ -243,7 +243,7 @@
           "hy/shell.json"
         ],
         "auth": [
-          "hy/auth.json"
+          "hy/auth-messages.json"
         ],
         "deployments": [
           "hy/deployments.json"
@@ -306,7 +306,7 @@
           "az/shell.json"
         ],
         "auth": [
-          "az/auth.json"
+          "az/auth-messages.json"
         ],
         "deployments": [
           "az/deployments.json"
@@ -371,7 +371,7 @@
           "de/shell.json"
         ],
         "auth": [
-          "de/auth.json"
+          "de/auth-messages.json"
         ],
         "deployments": [
           "de/deployments.json"
@@ -436,7 +436,7 @@
           "fr/shell.json"
         ],
         "auth": [
-          "fr/auth.json"
+          "fr/auth-messages.json"
         ],
         "deployments": [
           "fr/deployments.json"
@@ -501,7 +501,7 @@
           "nl/shell.json"
         ],
         "auth": [
-          "nl/auth.json"
+          "nl/auth-messages.json"
         ],
         "deployments": [
           "nl/deployments.json"
@@ -564,7 +564,7 @@
           "bs/shell.json"
         ],
         "auth": [
-          "bs/auth.json"
+          "bs/auth-messages.json"
         ],
         "deployments": [
           "bs/deployments.json"
@@ -628,7 +628,7 @@
           "hr/shell.json"
         ],
         "auth": [
-          "hr/auth.json"
+          "hr/auth-messages.json"
         ],
         "deployments": [
           "hr/deployments.json"
@@ -693,7 +693,7 @@
           "sr-Cyrl/shell.json"
         ],
         "auth": [
-          "sr-Cyrl/auth.json"
+          "sr-Cyrl/auth-messages.json"
         ],
         "deployments": [
           "sr-Cyrl/deployments.json"
@@ -758,7 +758,7 @@
           "sr-Latn/shell.json"
         ],
         "auth": [
-          "sr-Latn/auth.json"
+          "sr-Latn/auth-messages.json"
         ],
         "deployments": [
           "sr-Latn/deployments.json"
@@ -821,7 +821,7 @@
           "bg/shell.json"
         ],
         "auth": [
-          "bg/auth.json"
+          "bg/auth-messages.json"
         ],
         "deployments": [
           "bg/deployments.json"
@@ -885,7 +885,7 @@
           "el/shell.json"
         ],
         "auth": [
-          "el/auth.json"
+          "el/auth-messages.json"
         ],
         "deployments": [
           "el/deployments.json"
@@ -949,7 +949,7 @@
           "tr/shell.json"
         ],
         "auth": [
-          "tr/auth.json"
+          "tr/auth-messages.json"
         ],
         "deployments": [
           "tr/deployments.json"
@@ -1012,7 +1012,7 @@
           "cs/shell.json"
         ],
         "auth": [
-          "cs/auth.json"
+          "cs/auth-messages.json"
         ],
         "deployments": [
           "cs/deployments.json"
@@ -1075,7 +1075,7 @@
           "da/shell.json"
         ],
         "auth": [
-          "da/auth.json"
+          "da/auth-messages.json"
         ],
         "deployments": [
           "da/deployments.json"
@@ -1138,7 +1138,7 @@
           "et/shell.json"
         ],
         "auth": [
-          "et/auth.json"
+          "et/auth-messages.json"
         ],
         "deployments": [
           "et/deployments.json"
@@ -1201,7 +1201,7 @@
           "fi/shell.json"
         ],
         "auth": [
-          "fi/auth.json"
+          "fi/auth-messages.json"
         ],
         "deployments": [
           "fi/deployments.json"
@@ -1265,7 +1265,7 @@
           "sv/shell.json"
         ],
         "auth": [
-          "sv/auth.json"
+          "sv/auth-messages.json"
         ],
         "deployments": [
           "sv/deployments.json"
@@ -1328,7 +1328,7 @@
           "ka/shell.json"
         ],
         "auth": [
-          "ka/auth.json"
+          "ka/auth-messages.json"
         ],
         "deployments": [
           "ka/deployments.json"
@@ -1393,7 +1393,7 @@
           "hu/shell.json"
         ],
         "auth": [
-          "hu/auth.json"
+          "hu/auth-messages.json"
         ],
         "deployments": [
           "hu/deployments.json"
@@ -1456,7 +1456,7 @@
           "is/shell.json"
         ],
         "auth": [
-          "is/auth.json"
+          "is/auth-messages.json"
         ],
         "deployments": [
           "is/deployments.json"
@@ -1519,7 +1519,7 @@
           "ga/shell.json"
         ],
         "auth": [
-          "ga/auth.json"
+          "ga/auth-messages.json"
         ],
         "deployments": [
           "ga/deployments.json"
@@ -1584,7 +1584,7 @@
           "it/shell.json"
         ],
         "auth": [
-          "it/auth.json"
+          "it/auth-messages.json"
         ],
         "deployments": [
           "it/deployments.json"
@@ -1647,7 +1647,7 @@
           "lv/shell.json"
         ],
         "auth": [
-          "lv/auth.json"
+          "lv/auth-messages.json"
         ],
         "deployments": [
           "lv/deployments.json"
@@ -1710,7 +1710,7 @@
           "lt/shell.json"
         ],
         "auth": [
-          "lt/auth.json"
+          "lt/auth-messages.json"
         ],
         "deployments": [
           "lt/deployments.json"
@@ -1773,7 +1773,7 @@
           "lb/shell.json"
         ],
         "auth": [
-          "lb/auth.json"
+          "lb/auth-messages.json"
         ],
         "deployments": [
           "lb/deployments.json"
@@ -1836,7 +1836,7 @@
           "mt/shell.json"
         ],
         "auth": [
-          "mt/auth.json"
+          "mt/auth-messages.json"
         ],
         "deployments": [
           "mt/deployments.json"
@@ -1900,7 +1900,7 @@
           "ro/shell.json"
         ],
         "auth": [
-          "ro/auth.json"
+          "ro/auth-messages.json"
         ],
         "deployments": [
           "ro/deployments.json"
@@ -1963,7 +1963,7 @@
           "cnr-Latn/shell.json"
         ],
         "auth": [
-          "cnr-Latn/auth.json"
+          "cnr-Latn/auth-messages.json"
         ],
         "deployments": [
           "cnr-Latn/deployments.json"
@@ -2026,7 +2026,7 @@
           "cnr-Cyrl/shell.json"
         ],
         "auth": [
-          "cnr-Cyrl/auth.json"
+          "cnr-Cyrl/auth-messages.json"
         ],
         "deployments": [
           "cnr-Cyrl/deployments.json"
@@ -2089,7 +2089,7 @@
           "mk/shell.json"
         ],
         "auth": [
-          "mk/auth.json"
+          "mk/auth-messages.json"
         ],
         "deployments": [
           "mk/deployments.json"
@@ -2155,7 +2155,7 @@
           "nb/shell.json"
         ],
         "auth": [
-          "nb/auth.json"
+          "nb/auth-messages.json"
         ],
         "deployments": [
           "nb/deployments.json"
@@ -2218,7 +2218,7 @@
           "nn/shell.json"
         ],
         "auth": [
-          "nn/auth.json"
+          "nn/auth-messages.json"
         ],
         "deployments": [
           "nn/deployments.json"
@@ -2281,7 +2281,7 @@
           "pl/shell.json"
         ],
         "auth": [
-          "pl/auth.json"
+          "pl/auth-messages.json"
         ],
         "deployments": [
           "pl/deployments.json"
@@ -2346,7 +2346,7 @@
           "pt/shell.json"
         ],
         "auth": [
-          "pt/auth.json"
+          "pt/auth-messages.json"
         ],
         "deployments": [
           "pt/deployments.json"
@@ -2409,7 +2409,7 @@
           "sk/shell.json"
         ],
         "auth": [
-          "sk/auth.json"
+          "sk/auth-messages.json"
         ],
         "deployments": [
           "sk/deployments.json"
@@ -2472,7 +2472,7 @@
           "sl/shell.json"
         ],
         "auth": [
-          "sl/auth.json"
+          "sl/auth-messages.json"
         ],
         "deployments": [
           "sl/deployments.json"
@@ -2537,7 +2537,7 @@
           "es/shell.json"
         ],
         "auth": [
-          "es/auth.json"
+          "es/auth-messages.json"
         ],
         "deployments": [
           "es/deployments.json"
@@ -2600,7 +2600,7 @@
           "rm/shell.json"
         ],
         "auth": [
-          "rm/auth.json"
+          "rm/auth-messages.json"
         ],
         "deployments": [
           "rm/deployments.json"
@@ -2666,7 +2666,7 @@
           "uk/shell.json"
         ],
         "auth": [
-          "uk/auth.json"
+          "uk/auth-messages.json"
         ],
         "deployments": [
           "uk/deployments.json"
@@ -2731,7 +2731,7 @@
           "ru/shell.json"
         ],
         "auth": [
-          "ru/auth.json"
+          "ru/auth-messages.json"
         ],
         "deployments": [
           "ru/deployments.json"
@@ -2796,7 +2796,7 @@
           "zh-Hans/shell.json"
         ],
         "auth": [
-          "zh-Hans/auth.json"
+          "zh-Hans/auth-messages.json"
         ],
         "deployments": [
           "zh-Hans/deployments.json"
@@ -2859,7 +2859,7 @@
           "zh-Hant/shell.json"
         ],
         "auth": [
-          "zh-Hant/auth.json"
+          "zh-Hant/auth-messages.json"
         ],
         "deployments": [
           "zh-Hant/deployments.json"
@@ -2922,7 +2922,7 @@
           "ja/shell.json"
         ],
         "auth": [
-          "ja/auth.json"
+          "ja/auth-messages.json"
         ],
         "deployments": [
           "ja/deployments.json"
@@ -2986,7 +2986,7 @@
           "ko/shell.json"
         ],
         "auth": [
-          "ko/auth.json"
+          "ko/auth-messages.json"
         ],
         "deployments": [
           "ko/deployments.json"

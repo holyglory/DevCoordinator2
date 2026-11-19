@@ -5,6 +5,10 @@ of files**. A namespace can be split into smaller files without changing message
 IDs or page code. English is the source locale. Source IDs are stable: changing
 copy does not require renaming its ID.
 
+The `auth` namespace uses `auth-messages.json`, not the credential-store name
+`auth.json`. Producers must follow the manifest's explicit paths rather than
+derive filenames from namespace IDs; cleanup keeps credential names protected.
+
 A file is a UTF-8 JSON object mapping IDs to plain-text messages. Parameters use
 `{name}`. Plurals use `{ "argument": "count", "forms": { "one": "…", "other": "…" } }`;
 include every category returned by `Intl.PluralRules` for that locale. Exact
