@@ -427,6 +427,17 @@ impl CheckoutFixture {
 #[ignore = "requires a marked isolated root work area and explicit nonroot Git/PostgreSQL identities"]
 fn safe_checkout_removal_keeps_tasks_history_refs_and_canonical_source() {
     let fixture = CheckoutFixture::new();
+    // Exercise the real source catalog family. Its public auth namespace must
+    // remain removable without weakening the actual auth.json credential guard.
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../console/locales");
+    let destination = fixture.checkout.join("public-translations");
+    copy_translation_fixture(&source, &destination);
+    git(&fixture.checkout, &["add", "--", "public-translations"]);
+    git(
+        &fixture.checkout,
+        &["commit", "-qm", "public translation source"],
+    );
+    git(&fixture.checkout, &["push", "-q", "origin", "feature"]);
     git(
         &fixture.fixture.repository,
         &["switch", "-q", "-c", "other-active-work"],
@@ -517,6 +528,24 @@ fn safe_checkout_removal_keeps_tasks_history_refs_and_canonical_source() {
         &fixture.fixture.repository,
         &["cat-file", "-e", &format!("{shared_history}^{{commit}}")],
     );
+}
+
+fn copy_translation_fixture(source: &Path, destination: &Path) {
+    fs::create_dir(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let kind = entry.file_type().unwrap();
+        let target = destination.join(entry.file_name());
+        if kind.is_dir() {
+            copy_translation_fixture(&entry.path(), &target);
+        } else {
+            assert!(
+                kind.is_file(),
+                "catalog fixtures must contain regular source files"
+            );
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }
 
 #[test]
@@ -726,6 +755,8 @@ fn replacement_active_leases_and_expiry_cannot_be_approved_away() {
 fn protected_credentials_nested_sources_and_primary_copies_remain_blocked() {
     for scope in [
         "credentials",
+        "auth-credentials",
+        "tracked-auth-credentials",
         "nested",
         "primary",
         "locked",
@@ -738,6 +769,21 @@ fn protected_credentials_nested_sources_and_primary_copies_remain_blocked() {
                 "fixture-secret-never-returned",
             )
             .unwrap(),
+            "auth-credentials" | "tracked-auth-credentials" => {
+                fs::write(
+                    fixture.checkout.join("auth.json"),
+                    "fixture-secret-never-returned",
+                )
+                .unwrap();
+                if scope == "tracked-auth-credentials" {
+                    git(&fixture.checkout, &["add", "auth.json"]);
+                    git(
+                        &fixture.checkout,
+                        &["commit", "-qm", "tracked credential fixture"],
+                    );
+                    git(&fixture.checkout, &["push", "-q", "origin", "feature"]);
+                }
+            }
             "nested" => {
                 let nested = fixture.checkout.join("nested");
                 fs::create_dir(&nested).unwrap();

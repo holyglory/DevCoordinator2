@@ -131,10 +131,14 @@ test('sign-in pages use each enabled language, script preferences and validated 
 
 test('missing edge catalog fragments preserve the selected locale and English plural grammar', async () => {
   const catalogDir=await fs.mkdtemp(path.join(tmp,'locale-fault-'));
-  await fs.mkdir(path.join(catalogDir,'en'));
-  await fs.copyFile(new URL('../../console/locales/en/auth.json',import.meta.url),path.join(catalogDir,'en/auth.json'));
-  await fs.writeFile(path.join(catalogDir,'manifest.json'),JSON.stringify({sourceLocale:'en',locales:[
-    {tag:'en',status:'enabled',direction:'ltr',files:{auth:['en/auth.json']}},
+  const manifest=JSON.parse(await fs.readFile(new URL('../../console/locales/manifest.json',import.meta.url),'utf8'));
+  const source=manifest.locales.find(entry=>entry.tag===manifest.sourceLocale);
+  for(const file of source.files.auth) {
+    await fs.mkdir(path.dirname(path.join(catalogDir,file)),{recursive:true});
+    await fs.copyFile(new URL('../../console/locales/'+file,import.meta.url),path.join(catalogDir,file));
+  }
+  await fs.writeFile(path.join(catalogDir,'manifest.json'),JSON.stringify({sourceLocale:manifest.sourceLocale,locales:[
+    {...source,status:'enabled',files:{auth:source.files.auth}},
     {tag:'fr',status:'enabled',direction:'ltr',files:{auth:['fr/missing.json']}},
   ]}));
   const pages=createPageLocalization(catalogDir);

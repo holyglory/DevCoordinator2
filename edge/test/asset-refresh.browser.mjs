@@ -10,7 +10,7 @@ import { createStaticServer } from '../lib/static.mjs';
 const moduleRoot = process.env.CONSOLE_VERIFY_PLAYWRIGHT || path.resolve('ci/playwright');
 const { chromium } = createRequire(path.join(moduleRoot, 'package.json'))('playwright');
 
-test('ordinary browser reload replaces both unversioned assets after a release', async () => {
+test('ordinary browser reload replaces assets and manifest-mapped auth messages', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-browser-refresh-'));
   const assets = createStaticServer({ dir: directory });
   let measured = 41;
@@ -49,6 +49,38 @@ test('ordinary browser reload replaces both unversioned assets after a release',
       assert.deepEqual(errors, []);
       await context.close();
     }
+
+    // Use the actual browser loader and every published auth catalog, with no
+    // intercepted requests or message substitutes. Namespace IDs stay stable
+    // when the manifest maps them to a credential-safe asset basename.
+    await fs.cp(new URL('../../console/locales/', import.meta.url), path.join(directory, 'locales'), { recursive: true });
+    for (const file of ['i18n.mjs', 'i18n-core.mjs']) {
+      await fs.copyFile(new URL('../../console/' + file, import.meta.url), path.join(directory, file));
+    }
+    await fs.writeFile(path.join(directory, 'index.html'), '<!doctype html><meta charset="utf-8"><title>Auth message fixture</title><header><div class="who"></div></header><main id="message"></main><script type="module">import { i18n } from "/i18n.mjs"; await i18n.ready; await i18n.ensure("auth"); i18n.text(document.querySelector("#message"), "auth.googleSignIn"); window.authReady = true;</script>');
+    const manifest = JSON.parse(await fs.readFile(path.join(directory, 'locales/manifest.json'), 'utf8'));
+    const context = await browser.newContext({ locale: 'en', viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    const errors = [], requests = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('request', request => requests.push(new URL(request.url()).pathname));
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.waitForFunction(() => window.authReady === true);
+    let lastMessage;
+    for (const entry of manifest.locales.filter(entry => entry.status === 'enabled')) {
+      const messages = Object.assign({}, ...await Promise.all(entry.files.auth.map(file => fs.readFile(path.join(directory, 'locales', file), 'utf8').then(JSON.parse))));
+      await page.evaluate(tag => window.DevCoordinatorI18n.setLocale(tag), entry.tag);
+      assert.equal(await page.locator('html').getAttribute('lang'), entry.tag, entry.tag);
+      assert.equal(await page.locator('#message').textContent(), messages.googleSignIn, entry.tag);
+      for (const file of entry.files.auth) assert.ok(requests.includes('/locales/' + file), file);
+      lastMessage = messages.googleSignIn;
+    }
+    await page.reload();
+    await page.waitForFunction(() => window.authReady === true);
+    assert.equal(await page.locator('#message').textContent(), lastMessage);
+    assert.ok(!requests.some(file => file.endsWith('/auth.json')));
+    assert.deepEqual(errors, []);
+    await context.close();
   } finally {
     await browser?.close();
     server.closeAllConnections();
