@@ -662,6 +662,16 @@ pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result
         "storage_protection_set",
         json!({"artifact_id":row["artifact_id"],"expected_revision":pin["revision"],"protected":false}),
     )?;
+    drain_log_retention(world)
+        .map_err(|error| format!("unpinned evidence maintenance: {error}"))?;
+    let refreshed = scanned(world, &repository, "retained-evidence-after-unpin")?;
+    let row = refreshed["artifacts"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|candidate| candidate["artifact_id"] == row["artifact_id"])
+        })
+        .ok_or("refreshed retained evidence missing")?;
     let plan = mcp(
         world,
         "storage_cleanup_plan",
