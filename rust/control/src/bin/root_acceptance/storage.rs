@@ -85,7 +85,7 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         ],
     )?;
     let mut tags = Vec::new();
-    for name in ["selected", "retained"] {
+    for name in ["selected", "retained", "unlabeled"] {
         let context = world.repo.join(name);
         fs::create_dir(&context).map_err(|e| e.to_string())?;
         fs::write(
@@ -99,20 +99,12 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
         let tag = format!("{}-{name}:fixture", world.unit_prefix);
-        run_status(
-            "docker",
-            &[
-                "--host",
-                &host,
-                "build",
-                "--network=none",
-                "--label",
-                &label,
-                "--tag",
-                &tag,
-                context.to_str().unwrap(),
-            ],
-        )?;
+        let mut arguments = vec!["--host", &host, "build", "--network=none"];
+        if name != "unlabeled" {
+            arguments.extend(["--label", &label]);
+        }
+        arguments.extend(["--tag", &tag, context.to_str().unwrap()]);
+        run_status("docker", &arguments)?;
         tags.push(tag);
     }
     let scan = world.call(
@@ -122,6 +114,35 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
     ensure!(
         wait_job(world, data(&scan)?["job_id"].as_str().unwrap())?["state"] == "completed",
         "Engine API cache discovery failed"
+    );
+    // Keep a real nil-label image in the same batch as ordinary labeled images.
+    // Its presence must not discard the inventory or invent cleanup ownership.
+    let images = mcp(
+        world,
+        "storage_inventory",
+        json!({"kind":"image","query":tags[2],"limit":10}),
+    )?;
+    let unlabeled = images["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .ok_or("unlabeled fixture image was not inventoried")?;
+    ensure!(
+        unlabeled["repository_id"].is_null()
+            && unlabeled["ownership"] == "unknown"
+            && unlabeled["deletable"] == false
+            && unlabeled["reasons"]
+                .as_array()
+                .is_some_and(|reasons| reasons.contains(&json!("ownership_unknown"))),
+        "unlabeled image acquired cleanup ownership"
+    );
+    let refusal = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[unlabeled["artifact_id"]]}),
+    )?;
+    ensure!(
+        refusal["ready"] == false,
+        "unlabeled image acquired a removal plan"
     );
     let inventory = mcp(
         world,
