@@ -107,6 +107,23 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         run_status("docker", &arguments)?;
         tags.push(tag);
     }
+    let unlabeled_metadata = Command::new("docker")
+        .args([
+            "--host",
+            &host,
+            "image",
+            "inspect",
+            "--format",
+            "{{json .Config.Labels}}",
+            &tags[2],
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        unlabeled_metadata.status.success()
+            && String::from_utf8_lossy(&unlabeled_metadata.stdout).trim() == "null",
+        "unlabeled fixture must exercise nil image labels"
+    );
     let scan = world.call(
         "storage.scan",
         json!({"idempotency_key":"engine-cache-initial"}),
@@ -299,6 +316,12 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         ],
     )?;
     unused_image_ownership(world, &repository, &host, &tags[1])?;
+    run_status(
+        "docker",
+        &[
+            "--host", &host, "image", "inspect", "--format", "{{.Id}}", &tags[2],
+        ],
+    )?;
     unavailable_engine_observations(world, &host)?;
     Ok(())
 }

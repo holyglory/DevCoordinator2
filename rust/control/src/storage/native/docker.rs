@@ -30,6 +30,12 @@ fn inactive(v: &Value) -> bool {
     matches!(s(v, "state"), "exited" | "dead" | "created")
 }
 
+#[cfg(feature = "root-acceptance")]
+fn private_fixture_socket_ready(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
+}
+
 impl HostBackend {
     fn fixture_namespace(&self) -> Option<&str> {
         #[cfg(feature = "root-acceptance")]
@@ -72,6 +78,18 @@ impl HostBackend {
 
     fn discovery_arguments(&self, mut args: Vec<String>) -> Vec<String> {
         if let Some(namespace) = self.fixture_namespace() {
+            // A verified private engine must expose unlabeled image fixtures.
+            // Host-engine discovery and every other resource keep label scope.
+            #[cfg(feature = "root-acceptance")]
+            if args.first().is_some_and(|kind| kind == "image")
+                && self
+                    .fixture_engine_socket()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|socket| private_fixture_socket_ready(&socket))
+            {
+                return args;
+            }
             args.extend([
                 "--filter".into(),
                 format!("label=devcoordinator2.instance={namespace}"),
@@ -1124,4 +1142,64 @@ fn date_ms(value: &str) -> Option<u64> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .ok()
         .and_then(|d| u64::try_from(d.unix_timestamp_nanos() / 1_000_000).ok())
+}
+
+#[cfg(all(test, feature = "root-acceptance"))]
+mod tests {
+    use super::*;
+    use crate::automation_test_support::Fixture;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn image_fixture_socket_requires_a_real_socket_without_following_links() {
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("engine.sock");
+        assert!(!private_fixture_socket_ready(&socket));
+        std::fs::write(&socket, b"not a socket").unwrap();
+        assert!(!private_fixture_socket_ready(&socket));
+        std::fs::remove_file(&socket).unwrap();
+        let _listener = UnixListener::bind(&socket).unwrap();
+        assert!(private_fixture_socket_ready(&socket));
+        let alias = temporary.path().join("alias.sock");
+        symlink(&socket, &alias).unwrap();
+        assert!(!private_fixture_socket_ready(&alias));
+    }
+
+    #[test]
+    fn host_and_invalid_private_engine_discovery_keep_fixture_label_scope() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config.clone();
+        config.unit_prefix = "devcoordinator2-rustint-image-scope".into();
+        std::fs::create_dir_all(&config.state_dir).unwrap();
+        let backend = HostBackend::new(config, fixture.database.clone());
+        let expected_scope = format!(
+            "label=devcoordinator2.instance={}",
+            backend.config.unit_prefix
+        );
+        let assert_scoped = || {
+            for kind in ["image", "container", "volume", "network"] {
+                assert_eq!(
+                    backend.discovery_arguments(vec![kind.into(), "ls".into()]),
+                    [kind, "ls", "--filter", &expected_scope]
+                );
+            }
+        };
+        // No private-engine declaration means the shared host engine.
+        assert_scoped();
+        let declaration = backend.config.state_dir.join("storage-fixture-engine.json");
+        let missing = backend.config.state_dir.join("missing.sock");
+        let regular = backend.config.state_dir.join("regular.sock");
+        std::fs::write(&regular, b"not a socket").unwrap();
+        for value in [
+            b"invalid json".to_vec(),
+            serde_json::to_vec(&missing).unwrap(),
+            serde_json::to_vec(&regular).unwrap(),
+            serde_json::to_vec(&PathBuf::from("/run/docker.sock")).unwrap(),
+        ] {
+            std::fs::write(&declaration, value).unwrap();
+            std::fs::set_permissions(&declaration, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_scoped();
+        }
+    }
 }
