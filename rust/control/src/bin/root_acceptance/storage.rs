@@ -12,7 +12,7 @@ const ORDERING_SCAN_BUDGET: Duration = Duration::from_secs(300);
 pub(super) fn start_fixture_engine(world: &mut World) -> Result<String, String> {
     let runtime = tempfile::Builder::new()
         .prefix("dc2-builder-")
-        .tempdir_in("/tmp")
+        .tempdir()
         .map_err(|error| error.to_string())?;
     let exec_root = runtime.path().join("exec");
     world.builder_runtime = Some(runtime);
@@ -66,6 +66,34 @@ pub(super) fn start_fixture_engine(world: &mut World) -> Result<String, String> 
         &json!(socket),
     )?;
     Ok(format!("unix://{}", socket.display()))
+}
+
+fn fixture_observation(host: &str, kind: &str, identity: &str) -> Result<Value, String> {
+    let name = match kind {
+        "container" => "CONTAINER_FORMAT",
+        "network" => "NETWORK_FORMAT",
+        _ => return Err("unsupported fixture observation".into()),
+    };
+    let prefix = format!("const {name}: &str = r#\"");
+    let format = include_str!("../../storage/native/docker.rs")
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(&prefix)
+                .and_then(|v| v.strip_suffix("\"#;"))
+        })
+        .ok_or("production Docker observation template missing")?;
+    let output = Command::new("docker")
+        .args([
+            "--host", host, kind, "inspect", "--format", format, identity,
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        output.status.success(),
+        "unlabeled {} observation failed",
+        kind
+    );
+    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
 }
 
 pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
@@ -123,6 +151,51 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         unlabeled_metadata.status.success()
             && String::from_utf8_lossy(&unlabeled_metadata.stdout).trim() == "null",
         "unlabeled fixture must exercise nil image labels"
+    );
+    let unlabeled_container = format!("{}-unlabeled", world.unit_prefix);
+    let created = Command::new("docker")
+        .args([
+            "--host",
+            &host,
+            "create",
+            "--network=none",
+            "--name",
+            &unlabeled_container,
+            "--entrypoint",
+            "/payload",
+            &tags[2],
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        created.status.success(),
+        "unlabeled fixture container was not created"
+    );
+    let id = String::from_utf8(created.stdout).map_err(|error| error.to_string())?;
+    let observed = fixture_observation(&host, "container", id.trim())?;
+    ensure!(
+        observed["id"] == id.trim()
+            && ["instance", "repository", "deployment", "project"]
+                .iter()
+                .all(|key| observed[*key].is_null()),
+        "unlabeled container lost identity or acquired ownership labels"
+    );
+    let unlabeled_network = format!("{}-unlabeled-network", world.unit_prefix);
+    let created = Command::new("docker")
+        .args(["--host", &host, "network", "create", &unlabeled_network])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        created.status.success(),
+        "unlabeled fixture network was not created"
+    );
+    let id = String::from_utf8(created.stdout).map_err(|error| error.to_string())?;
+    let observed = fixture_observation(&host, "network", id.trim())?;
+    ensure!(
+        observed["id"] == id.trim()
+            && observed["name"] == unlabeled_network
+            && observed["project"].is_null(),
+        "unlabeled network lost identity or acquired an ownership label"
     );
     let scan = world.call(
         "storage.scan",
