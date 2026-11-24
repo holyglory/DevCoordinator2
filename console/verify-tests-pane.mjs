@@ -199,7 +199,7 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   for (const [phase, label] of [['fixture', 'Database setup'], ['cleanup', 'Cleanup']]) {
     daemon.calls.length = 0;
     await page.locator('#test-log-stream').selectOption({ label: `Database cases · missing-seed · ${label} · Error output` });
-    await page.waitForFunction(() => !document.querySelector('#test-log-stream')?.disabled);
+    await page.waitForFunction(() => document.querySelector('#test-log-read-result')?.getAttribute('aria-busy') === 'false');
     verify(`${label} opens the exact case output`, daemon.calls.some((call) => call.operation === 'test.log.tail' && call.params.check === 'database-cases' && call.params.case === 'missing-seed' && call.params.phase === phase));
   }
   await page.keyboard.press('Escape');

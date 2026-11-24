@@ -1670,6 +1670,7 @@ async function main() {
     await visualRow.locator('.test-thumbnail').count() === 4
     && await visualRow.locator('.test-preview-more').count() === 1);
   await chooseRepository(page, 'repo-one');
+  await runningRow.locator('.test-result-summary>.badge').waitFor();
   check('tests: nonvisual runs do not claim to have screenshots', await runningRow.locator('.test-thumbnail, a[href^="#/tests/"]').count() === 0);
   await page.setViewportSize(VIEWPORTS.narrow);
   const narrowTests = await page.evaluate(() => {
@@ -2016,7 +2017,8 @@ async function main() {
   await waitForSettledCall(daemon, page, 'test.capacity.set');
   check('interaction: saving the administrator maximum calls test.capacity.set directly',
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === 72));
-  await page.waitForSelector('#test-capacity-open', { state: 'attached' });
+  await page.waitForFunction(() => !document.querySelector('#test-capacity-dialog[open]')
+    && document.querySelectorAll('#nav-toggle:focus, .test-settings-toggle:focus, #test-capacity-open:focus').length === 1);
   check('interaction: saving capacity returns focus to the Capacity action',
     await page.locator('#nav-toggle:focus, .test-settings-toggle:focus, #test-capacity-open:focus').count() === 1);
   await revealTestSettings(page); await page.click('#test-capacity-open');
@@ -2442,6 +2444,10 @@ async function main() {
   await page.click('[data-progress-period="hour"]');
   await waitForSettledCall(daemon, page,
     (call) => call.operation === 'progress.repository' && call.params.period === 'hour');
+  await page.waitForFunction((repository) => location.hash === `#/progress/${repository}`
+    && document.querySelector('[data-progress-period="hour"]:focus')
+    && document.querySelector('.progress-completed-bar')
+    && document.querySelector('.progress-incoming-bar'), REPO);
   check('interaction: hourly progress reads hourly repository buckets',
     daemon.calls.some((call) => call.operation === 'progress.repository'
       && call.params.repository_id === REPO && call.params.period === 'hour')
