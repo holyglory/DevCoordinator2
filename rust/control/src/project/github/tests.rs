@@ -28,6 +28,7 @@ pub(in crate::project) struct Step {
     chunked: bool,
     response_gate: Option<Arc<tokio::sync::Notify>>,
     response_started: Option<Arc<tokio::sync::Notify>>,
+    expected_api_version: Option<&'static str>,
     expected_token: &'static str,
 }
 
@@ -44,6 +45,7 @@ impl Step {
             chunked: false,
             response_gate: None,
             response_started: None,
+            expected_api_version: None,
             expected_token: TOKEN,
         }
     }
@@ -70,6 +72,11 @@ impl Step {
         self
     }
 
+    fn api_version(mut self, version: &'static str) -> Self {
+        self.expected_api_version = Some(version);
+        self
+    }
+
     fn mutation(value: Option<Value>) -> Self {
         Self {
             method: "POST",
@@ -82,6 +89,7 @@ impl Step {
             chunked: false,
             response_gate: None,
             response_started: None,
+            expected_api_version: None,
             expected_token: TOKEN,
         }
     }
@@ -92,7 +100,7 @@ pub(in crate::project) struct Captured {
     method: String,
     target: String,
     authorized: bool,
-    pinned_version: bool,
+    api_version: String,
     body: Option<Value>,
 }
 
@@ -163,13 +171,18 @@ impl Fixture {
                 let authorization = fields
                     .get("authorization")
                     .is_some_and(|value| value == &format!("Bearer {}", step.expected_token));
+                let api_version = fields
+                    .get("x-github-api-version")
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(expected) = step.expected_api_version {
+                    assert_eq!(api_version, expected, "GitHub API response contract");
+                }
                 records.lock().unwrap().push(Captured {
                     method: method.clone(),
                     target: target.clone(),
                     authorized: authorization,
-                    pinned_version: fields
-                        .get("x-github-api-version")
-                        .is_some_and(|value| value == GITHUB_API_VERSION),
+                    api_version,
                     body: body.clone(),
                 });
                 assert_eq!(method, step.method, "HTTP method");
@@ -280,7 +293,8 @@ fn proof_steps() -> Vec<Step> {
             format!("{}/branches/feature%2Fdemo", root()),
             branch_json(BRANCH, FEATURE),
         ),
-        Step::get(format!("{}/pulls/12", root()), pull_json()),
+        Step::get(format!("{}/pulls/12", root()), pull_json())
+            .api_version(GITHUB_PR_PROOF_API_VERSION),
         Step::get(
             format!("{}/branches/main", root()),
             branch_json("main", TARGET),
@@ -397,10 +411,20 @@ async fn http_journey_reads_remote_pages_parents_and_atomically_retires_squash_h
             .iter()
             .all(|request| request.target == "/graphql" || request.target.starts_with(root()))
     );
-    assert!(
+    assert!(captured.iter().all(|request| {
+        request.authorized
+            && matches!(
+                request.api_version.as_str(),
+                GITHUB_API_VERSION | GITHUB_PR_PROOF_API_VERSION
+            )
+    }));
+    assert_eq!(
         captured
             .iter()
-            .all(|request| request.authorized && request.pinned_version)
+            .find(|request| request.target == format!("{}/pulls/12", root()))
+            .map(|request| request.api_version.as_str()),
+        Some(GITHUB_PR_PROOF_API_VERSION),
+        "merge proof reads the PR schema that contains merge_commit_sha"
     );
     let mutation = captured
         .iter()
