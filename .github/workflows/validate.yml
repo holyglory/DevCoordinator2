@@ -87,6 +87,8 @@ jobs:
         run: cargo build --locked --release --package devcoordinator2-control --features root-acceptance --bin devcoordinator2 --bin devcoordinator2-root-acceptance --package devcoordinator2-executor-core --bin devcoordinator2-executor-test-fixture
       - name: Test Linux acceptance input and ownership guards
         run: cargo test --locked --package devcoordinator2-control --features root-acceptance --bin devcoordinator2-root-acceptance
+      - name: Test Docker image observation templates without host resources
+        run: node --test ci/storage-image-metadata.test.mjs
 
   edge:
     name: Edge runtime

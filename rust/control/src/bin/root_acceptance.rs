@@ -274,6 +274,9 @@ impl World {
             .env("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
             .env("DEVCOORDINATOR2_PORT_RANGE", &self.harness.port_range)
             .env("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", &self.policy);
+        if let Some(temporary) = std::env::var_os("TMPDIR") {
+            command.env("TMPDIR", temporary);
+        }
         if let Some(uid) = edge_uid {
             command.env("DEVCOORDINATOR2_EDGE_UID", uid.to_string());
         }

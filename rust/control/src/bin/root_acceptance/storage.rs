@@ -12,7 +12,7 @@ const ORDERING_SCAN_BUDGET: Duration = Duration::from_secs(300);
 pub(super) fn start_fixture_engine(world: &mut World) -> Result<String, String> {
     let runtime = tempfile::Builder::new()
         .prefix("dc2-builder-")
-        .tempdir_in("/tmp")
+        .tempdir()
         .map_err(|error| error.to_string())?;
     let exec_root = runtime.path().join("exec");
     world.builder_runtime = Some(runtime);
@@ -68,6 +68,34 @@ pub(super) fn start_fixture_engine(world: &mut World) -> Result<String, String> 
     Ok(format!("unix://{}", socket.display()))
 }
 
+fn fixture_observation(host: &str, kind: &str, identity: &str) -> Result<Value, String> {
+    let name = match kind {
+        "container" => "CONTAINER_FORMAT",
+        "network" => "NETWORK_FORMAT",
+        _ => return Err("unsupported fixture observation".into()),
+    };
+    let prefix = format!("const {name}: &str = r#\"");
+    let format = include_str!("../../storage/native/docker.rs")
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(&prefix)
+                .and_then(|v| v.strip_suffix("\"#;"))
+        })
+        .ok_or("production Docker observation template missing")?;
+    let output = Command::new("docker")
+        .args([
+            "--host", host, kind, "inspect", "--format", format, identity,
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        output.status.success(),
+        "unlabeled {} observation failed",
+        kind
+    );
+    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
+}
+
 pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
     world.write_config("schema = 2\n")?;
     let host = start_fixture_engine(world)?;
@@ -85,7 +113,7 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         ],
     )?;
     let mut tags = Vec::new();
-    for name in ["selected", "retained"] {
+    for name in ["selected", "retained", "unlabeled"] {
         let context = world.repo.join(name);
         fs::create_dir(&context).map_err(|e| e.to_string())?;
         fs::write(
@@ -99,22 +127,76 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
         let tag = format!("{}-{name}:fixture", world.unit_prefix);
-        run_status(
-            "docker",
-            &[
-                "--host",
-                &host,
-                "build",
-                "--network=none",
-                "--label",
-                &label,
-                "--tag",
-                &tag,
-                context.to_str().unwrap(),
-            ],
-        )?;
+        let mut arguments = vec!["--host", &host, "build", "--network=none"];
+        if name != "unlabeled" {
+            arguments.extend(["--label", &label]);
+        }
+        arguments.extend(["--tag", &tag, context.to_str().unwrap()]);
+        run_status("docker", &arguments)?;
         tags.push(tag);
     }
+    let unlabeled_metadata = Command::new("docker")
+        .args([
+            "--host",
+            &host,
+            "image",
+            "inspect",
+            "--format",
+            "{{json .Config.Labels}}",
+            &tags[2],
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        unlabeled_metadata.status.success()
+            && String::from_utf8_lossy(&unlabeled_metadata.stdout).trim() == "null",
+        "unlabeled fixture must exercise nil image labels"
+    );
+    let unlabeled_container = format!("{}-unlabeled", world.unit_prefix);
+    let created = Command::new("docker")
+        .args([
+            "--host",
+            &host,
+            "create",
+            "--network=none",
+            "--name",
+            &unlabeled_container,
+            "--entrypoint",
+            "/payload",
+            &tags[2],
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        created.status.success(),
+        "unlabeled fixture container was not created"
+    );
+    let id = String::from_utf8(created.stdout).map_err(|error| error.to_string())?;
+    let observed = fixture_observation(&host, "container", id.trim())?;
+    ensure!(
+        observed["id"] == id.trim()
+            && ["instance", "repository", "deployment", "project"]
+                .iter()
+                .all(|key| observed[*key].is_null()),
+        "unlabeled container lost identity or acquired ownership labels"
+    );
+    let unlabeled_network = format!("{}-unlabeled-network", world.unit_prefix);
+    let created = Command::new("docker")
+        .args(["--host", &host, "network", "create", &unlabeled_network])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        created.status.success(),
+        "unlabeled fixture network was not created"
+    );
+    let id = String::from_utf8(created.stdout).map_err(|error| error.to_string())?;
+    let observed = fixture_observation(&host, "network", id.trim())?;
+    ensure!(
+        observed["id"] == id.trim()
+            && observed["name"] == unlabeled_network
+            && observed["project"].is_null(),
+        "unlabeled network lost identity or acquired an ownership label"
+    );
     let scan = world.call(
         "storage.scan",
         json!({"idempotency_key":"engine-cache-initial"}),
@@ -122,6 +204,35 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
     ensure!(
         wait_job(world, data(&scan)?["job_id"].as_str().unwrap())?["state"] == "completed",
         "Engine API cache discovery failed"
+    );
+    // Keep a real nil-label image in the same batch as ordinary labeled images.
+    // Its presence must not discard the inventory or invent cleanup ownership.
+    let images = mcp(
+        world,
+        "storage_inventory",
+        json!({"kind":"image","query":tags[2],"limit":10}),
+    )?;
+    let unlabeled = images["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .ok_or("unlabeled fixture image was not inventoried")?;
+    ensure!(
+        unlabeled["repository_id"].is_null()
+            && unlabeled["ownership"] == "unknown"
+            && unlabeled["deletable"] == false
+            && unlabeled["reasons"]
+                .as_array()
+                .is_some_and(|reasons| reasons.contains(&json!("ownership_unknown"))),
+        "unlabeled image acquired cleanup ownership"
+    );
+    let refusal = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[unlabeled["artifact_id"]]}),
+    )?;
+    ensure!(
+        refusal["ready"] == false,
+        "unlabeled image acquired a removal plan"
     );
     let inventory = mcp(
         world,
@@ -278,6 +389,12 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         ],
     )?;
     unused_image_ownership(world, &repository, &host, &tags[1])?;
+    run_status(
+        "docker",
+        &[
+            "--host", &host, "image", "inspect", "--format", "{{.Id}}", &tags[2],
+        ],
+    )?;
     unavailable_engine_observations(world, &host)?;
     Ok(())
 }
@@ -618,6 +735,16 @@ pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result
         "storage_protection_set",
         json!({"artifact_id":row["artifact_id"],"expected_revision":pin["revision"],"protected":false}),
     )?;
+    drain_log_retention(world)
+        .map_err(|error| format!("unpinned evidence maintenance: {error}"))?;
+    let refreshed = scanned(world, &repository, "retained-evidence-after-unpin")?;
+    let row = refreshed["artifacts"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|candidate| candidate["artifact_id"] == row["artifact_id"])
+        })
+        .ok_or("refreshed retained evidence missing")?;
     let plan = mcp(
         world,
         "storage_cleanup_plan",
