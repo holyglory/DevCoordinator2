@@ -659,7 +659,10 @@ fn branch_page(
             )?;
             b.upstream = None;
         }
-        let checkouts=c.prepare("SELECT record_json::text FROM project_checkouts WHERE project_id=$1 AND branch_id=$2 AND ($3::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($3::jsonb))) ORDER BY worktree_id LIMIT 4097")?.query_map(params![p.project_id,b.branch_id,scope.visible_json()],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
+        // Retired checkout rows remain for history and cleanup receipts, but
+        // they are not current local copies and must not create an actionable
+        // removal control for a retired branch.
+        let checkouts=c.prepare("SELECT record_json::text FROM project_checkouts WHERE project_id=$1 AND branch_id=$2 AND exists_on_disk IS DISTINCT FROM false AND ($3::jsonb IS NULL OR physical_repository_id IN(SELECT jsonb_array_elements_text($3::jsonb))) ORDER BY worktree_id LIMIT 4097")?.query_map(params![p.project_id,b.branch_id,scope.visible_json()],|r|r.get::<_,String>(0))?.collect::<crate::database::Result<Vec<_>>>()?;
         b.worktree_ids.clear();
         let (mut source, mut build, mut local) = (Some(0u64), Some(0u64), Some(0u64));
         if checkouts.is_empty() {
