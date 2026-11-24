@@ -22,6 +22,9 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 pub const GITHUB_API_VERSION: &str = "2026-03-10";
+// Pull-request detail responses under the current API version omit
+// merge_commit_sha. Merge proof uses the response contract that includes it.
+const GITHUB_PR_PROOF_API_VERSION: &str = "2022-11-28";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TOKEN_BYTES: u64 = 4096;
 const MAX_PAGE: u32 = 10_000;
@@ -543,6 +546,18 @@ impl Session<'_> {
         query: &[(&str, String)],
         body: Option<Value>,
     ) -> Result<Document, GithubError> {
+        self.request_with_version(method, segments, query, body, GITHUB_API_VERSION)
+            .await
+    }
+
+    async fn request_with_version(
+        &self,
+        method: Method,
+        segments: &[&str],
+        query: &[(&str, String)],
+        body: Option<Value>,
+        api_version: &str,
+    ) -> Result<Document, GithubError> {
         self.client.check_rate_limit()?;
         let url = self.url(segments, query);
         let mut request = self
@@ -550,7 +565,7 @@ impl Session<'_> {
             .http
             .request(method, url.clone())
             .header(AUTHORIZATION, self.authorization.clone())
-            .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+            .header("X-GitHub-Api-Version", api_version)
             .header("Accept", "application/vnd.github+json")
             .header(CACHE_CONTROL, "no-cache");
         if let Some(body) = body {
@@ -894,7 +909,7 @@ impl Session<'_> {
             return Err(GithubError::Conflict);
         }
         let document = self
-            .request(
+            .request_with_version(
                 Method::GET,
                 &[
                     "repos",
@@ -905,6 +920,7 @@ impl Session<'_> {
                 ],
                 &[],
                 None,
+                GITHUB_PR_PROOF_API_VERSION,
             )
             .await?;
         let raw: RawPullRequest = decode(document.value)?;

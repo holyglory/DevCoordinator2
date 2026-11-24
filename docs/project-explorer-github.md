@@ -21,6 +21,10 @@ completed successfully. Queue admission never renews that timestamp, including
 when the old evidence has expired for a consumer's freshness requirement.
 A failed later request keeps that timestamp and cached branches but
 reports `failed`; an incomplete page scan never creates a successful receipt.
+Merge-proof verification reads pull-request detail through the GitHub response
+contract that includes `merge_commit_sha`, while other requests use the current
+API contract. The verifier records the exact head and integration checks before
+any remote branch retirement.
 Local-copy inspection and pull-request proof failures remain in the combined
 source status without invalidating a complete branch-list observation. These
 receipts live in the existing durable refresh-job records. The live Console
