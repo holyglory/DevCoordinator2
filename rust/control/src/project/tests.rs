@@ -491,6 +491,16 @@ fn persistent_products_group_explicit_sources_and_clones_and_preserve_missing_in
             .as_deref(),
         Some("Finish user workflow")
     );
+    assert!(
+        status
+            .branches
+            .iter()
+            .find(|b| b.branch_id == edited.branch_id)
+            .unwrap()
+            .worktree_ids
+            .is_empty(),
+        "a missing checkout remains in history but is not an actionable local copy"
+    );
     assert_eq!(
         status
             .checkouts
