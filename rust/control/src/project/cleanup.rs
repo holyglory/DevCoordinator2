@@ -19,6 +19,7 @@ pub(crate) struct VerifiedCheckoutRemoval {
     branch_name: String,
     head_sha: String,
     receipt_id: String,
+    approved_unpreserved_git_history: Vec<String>,
 }
 
 impl VerifiedCheckoutRemoval {
@@ -36,6 +37,9 @@ impl VerifiedCheckoutRemoval {
     }
     pub(crate) fn receipt_id(&self) -> &str {
         &self.receipt_id
+    }
+    pub(crate) fn approved_unpreserved_git_history(&self) -> &[String] {
+        &self.approved_unpreserved_git_history
     }
 }
 
@@ -372,7 +376,13 @@ impl ProjectService {
                         "local branch changed after the checkout was removed",
                     ));
                 }
-                verify_branch_reflog_preserved(&root, owner, &reference, cleanup.head_sha())?;
+                verify_branch_reflog_preserved(
+                    &root,
+                    owner,
+                    &reference,
+                    cleanup.head_sha(),
+                    cleanup.approved_unpreserved_git_history(),
+                )?;
                 let result = repository::run_git_arguments(
                     &root,
                     owner,
@@ -466,6 +476,11 @@ impl ProjectService {
                 .clone()
                 .ok_or_else(|| invalid("checkout head is unavailable"))?,
             receipt_id: format!("{}:{}", job.job_id, target.artifact_id),
+            // A cleanup receipt can exist only after checkout_start accepted
+            // the exact approval bound to this plan and fingerprint. Carry
+            // the reviewed history identifiers into branch retirement so the
+            // later ref deletion can accept only this approved loss.
+            approved_unpreserved_git_history: target.observed.unpreserved_git_history.clone(),
         })
     }
 
@@ -639,6 +654,7 @@ fn verify_branch_reflog_preserved(
     owner: Option<(u32, u32)>,
     reference: &str,
     current_head: &str,
+    approved_unpreserved_git_history: &[String],
 ) -> Result<(), ProtocolError> {
     let observe = |arguments: &[&str]| {
         let result = repository::run_git_arguments_complete(
@@ -725,14 +741,27 @@ fn verify_branch_reflog_preserved(
         "-c",
         "core.hooksPath=/dev/null",
         "rev-list",
-        "--max-count=1",
+        "--max-count=4097",
     ];
     arguments.extend(tips.iter().map(String::as_str));
     arguments.extend(["--not", &exclusion, "--all"]);
-    if !observe(&arguments)?.is_empty() {
-        return Err(conflict(
-            "local branch reflog contains history not preserved by retained refs",
-        ));
+    let unpreserved = observe(&arguments)?;
+    if !unpreserved.is_empty() {
+        let approved = std::str::from_utf8(&unpreserved)
+            .map_err(|_| conflict("local branch history cannot be completely inspected"))?
+            .lines()
+            .filter(|oid| !oid.is_empty())
+            .map(|oid| format!("commit:{oid}"))
+            .collect::<Vec<_>>();
+        if approved.iter().any(|oid| {
+            !approved_unpreserved_git_history
+                .iter()
+                .any(|allowed| allowed == oid)
+        }) {
+            return Err(conflict(
+                "local branch reflog contains history not preserved by retained refs",
+            ));
+        }
     }
     if observe(&reflog_arguments)? != before || read_raw()?.0 != raw_fingerprint {
         return Err(conflict("local branch history changed during retirement"));

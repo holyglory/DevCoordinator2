@@ -1626,6 +1626,46 @@ fn local_ref_retirement_requires_cleanup_and_compare_and_swap_head() {
     );
 }
 
+#[test]
+#[ignore = "requires a marked isolated root work area and explicit nonroot Git/PostgreSQL identities"]
+fn approved_reflog_history_is_the_only_unpreserved_branch_loss_allowed() {
+    let fixture = CheckoutFixture::new();
+    let root = &fixture.fixture.repository;
+    let current = git(root, &["rev-parse", "refs/heads/feature"]);
+    let tree = git(root, &["rev-parse", "HEAD^{tree}"]);
+    let old = git(
+        root,
+        &["commit-tree", &tree, "-m", "approved intermediate history"],
+    );
+    git(root, &["update-ref", "refs/heads/feature", &old]);
+    git(
+        root,
+        &[
+            "update-ref",
+            "-m",
+            "restore reviewed head",
+            "refs/heads/feature",
+            &current,
+        ],
+    );
+    let owner = Some((caller().uid, caller().gid));
+    let reference = "refs/heads/feature";
+    let blocked =
+        super::verify_branch_reflog_preserved(root, owner, reference, &current, &[]).unwrap_err();
+    assert!(
+        blocked.message.contains("history not preserved"),
+        "{blocked:?}"
+    );
+    super::verify_branch_reflog_preserved(
+        root,
+        owner,
+        reference,
+        &current,
+        &[format!("commit:{old}")],
+    )
+    .unwrap();
+}
+
 fn queued_review(fixture: &CheckoutFixture, key: &str) -> removal::ReviewJob {
     own_fixture_tree(fixture.fixture._temporary.path());
     fixture
