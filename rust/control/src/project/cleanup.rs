@@ -460,8 +460,22 @@ impl ProjectService {
             .receipts
             .iter()
             .any(|receipt| receipt.artifact_id == target.artifact_id && receipt.status == "removed")
-            || !storage.checkout_target_absent(target)?
         {
+            return Err(conflict("local checkout removal is not verified"));
+        }
+        let exists_on_disk = self
+            .database
+            .read(|connection| {
+                Ok(connection
+                    .query_row(
+                        "SELECT exists_on_disk FROM project_checkouts WHERE project_id=$1 AND worktree_id=$2",
+                        params![project_id, worktree_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .optional()?)
+            })
+            .map_err(database_error)?;
+        if exists_on_disk != Some(false) || !crate::storage::fs::absent(&target.binding.path)? {
             return Err(conflict("local checkout removal is not verified"));
         }
         Ok(VerifiedCheckoutRemoval {
