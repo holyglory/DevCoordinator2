@@ -190,9 +190,9 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     try {
       for(const width of [430,760]) {
         await page.setViewportSize({width,height:1058});
-        await page.goto(`${route}?checkout=${primary.worktree_id}`);await page.locator('[data-pe-remove]').waitFor();
+        await page.goto(`${route}?checkout=${primary.worktree_id}`);const remove=page.locator('[data-pe-remove]');await remove.waitFor();await remove.scrollIntoViewIfNeeded();
         const before=await page.evaluate(()=>({x:scrollX,y:scrollY}));
-        await page.locator('[data-pe-remove]').click();
+        await remove.click();
         const dialog=page.locator('.pe-removal-dialog[data-removal-result]');await dialog.waitFor({timeout:30000});
         const after=await page.evaluate(()=>({x:scrollX,y:scrollY}));
         assert.ok(Math.abs(after.x-before.x)<=8&&Math.abs(after.y-before.y)<=8,JSON.stringify({width,before,after}));
