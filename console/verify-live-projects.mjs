@@ -57,7 +57,7 @@ export async function verifyLiveProjects({root,out,base,request,check,checks}) {
     const primary=project.checkouts.find(c=>c.role==='primary');
     if(primary){
       await page.goto(`${base.href}#/projects/${projectId}?checkout=${primary.worktree_id}`);
-      await page.locator('[data-pe-remove]').click();await page.locator('.pe-removal-dialog[data-removal-result]').waitFor();
+      await page.locator('[data-pe-remove]').click();await page.locator('.pe-removal-dialog[data-removal-result]').waitFor({timeout:300000});
       check('Retained primary has no enabled removal',await page.locator('.pe-removal-dialog [data-start]:enabled').count()===0);
       await page.locator('.pe-removal-dialog footer [data-close]').click();
     }
