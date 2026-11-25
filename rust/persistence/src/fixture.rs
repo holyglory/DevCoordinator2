@@ -5,6 +5,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::fd::RawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -15,6 +16,14 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use crate::{DatabaseConfig, Error, Result};
+
+fn diagnostic_fd() -> Option<RawFd> {
+    std::env::var("DEVCOORDINATOR_DIAGNOSTIC_FD")
+        .ok()?
+        .parse::<RawFd>()
+        .ok()
+        .filter(|fd| *fd > 2)
+}
 
 pub struct FixtureCluster {
     root: TempDir,
@@ -122,6 +131,18 @@ impl FixtureCluster {
             .open(self.root.path().join("commands.log"))
             .map_err(io_error)?;
         let mut command = Command::new(self.bin.join(name));
+        if let Some(fd) = diagnostic_fd() {
+            // PostgreSQL helpers are descendants of the governed check. The
+            // diagnostic pipe belongs to the check process, so descendants
+            // must close it before exec or the executor cannot observe EOF
+            // after the test itself exits.
+            unsafe {
+                command.pre_exec(move || {
+                    let _ = libc::close(fd);
+                    Ok(())
+                });
+            }
+        }
         if let Some((uid, gid)) = self.identity {
             // Root acceptance chooses this same-owner test identity explicitly.
             // Clear inherited root groups before dropping all three IDs.
@@ -300,6 +321,53 @@ impl FixtureDatabase {
             config,
             name,
         })
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn fixture_children_close_the_governed_diagnostic_descriptor() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let probe = bin.path().join("probe");
+        fs::write(
+            &probe,
+            "#!/bin/sh\nif [ -e \"/proc/self/fd/$DEVCOORDINATOR_DIAGNOSTIC_FD\" ]; then exit 7; fi\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let diagnostic = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(bin.path().join("diagnostic"))
+            .unwrap();
+        let fd = diagnostic.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) },
+            0
+        );
+        unsafe { std::env::set_var("DEVCOORDINATOR_DIAGNOSTIC_FD", fd.to_string()) };
+
+        let cluster = FixtureCluster {
+            root: tempfile::tempdir().unwrap(),
+            socket: tempfile::tempdir().unwrap(),
+            bin: bin.path().to_path_buf(),
+            running: Mutex::new(false),
+            identity: None,
+        };
+        let result = cluster.command("probe", &[], false);
+        unsafe { std::env::remove_var("DEVCOORDINATOR_DIAGNOSTIC_FD") };
+        result.unwrap();
     }
 }
 
