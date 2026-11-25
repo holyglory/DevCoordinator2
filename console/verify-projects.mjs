@@ -185,6 +185,21 @@ export async function verifyProjects({page,browser,base,call,request,check,cooki
     assert.equal(await dialog.locator('[data-start]:enabled').count(),0);
     await dialog.locator('footer [data-close]').click();
   });
+  await check('Removal review preserves the document viewport at narrow breakpoints',async()=>{
+    const data=await call('project.status',{project_id:id});const primary=data.checkouts.find(c=>c.role==='primary'&&c.absolute_path===fixture.primary);assert.ok(primary);
+    try {
+      for(const width of [430,760]) {
+        await page.setViewportSize({width,height:1058});
+        await page.goto(`${route}?checkout=${primary.worktree_id}`);await page.locator('[data-pe-remove]').waitFor();
+        const before=await page.evaluate(()=>({x:scrollX,y:scrollY}));
+        await page.locator('[data-pe-remove]').click();
+        const dialog=page.locator('.pe-removal-dialog[data-removal-result]');await dialog.waitFor({timeout:30000});
+        const after=await page.evaluate(()=>({x:scrollX,y:scrollY}));
+        assert.ok(Math.abs(after.x-before.x)<=8&&Math.abs(after.y-before.y)<=8,JSON.stringify({width,before,after}));
+        await dialog.locator('footer [data-close]').click();
+      }
+    } finally { await page.setViewportSize({width:1440,height:900}); }
+  },page);
   await check('Reloading a pending review restores exactly one dialog and one job',async()=>{
     const data=await call('project.status',{project_id:id});const primary=data.checkouts.find(c=>c.role==='primary'&&c.absolute_path===fixture.primary);
     let release;const held=new Promise(resolve=>{release=resolve;});

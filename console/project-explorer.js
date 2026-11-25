@@ -60,6 +60,13 @@ window.DevCoordinatorProjectExplorer = (() => {
     const fault = error => { if (!alive() || error?.code === 'stale' || error?.name === 'AbortError') return; s.error = error?.message || t('requestFailed'); paintState(); };
     const key = purpose => `explorer-${purpose}-${crypto.randomUUID()}`;
     const action = async fn => { try { return await fn(); } catch (error) { fault(error); return null; } };
+    const restoreDocumentScroll = view => {
+      const position = view?.documentScroll;
+      if (!position) return;
+      const restore = () => window.scrollTo(position.x, position.y);
+      restore();
+      requestAnimationFrame(() => { restore(); requestAnimationFrame(restore); });
+    };
 
     root.innerHTML = `<section class="pe-shell" data-project-explorer data-ui-region="project-explorer">
       <aside class="pe-projects" aria-label="${escape(t('projectList'))}"><header><h2>${icon('folder')}${h('projects')}</h2><button class="pe-icon-button pe-rail-close" type="button" data-pe-close-rail aria-label="${escape(t('closeProjects'))}">${icon('x')}</button></header><nav data-pe-project-list></nav><button class="btn btn-small" data-pe-more-projects hidden>${h('moreProjects')}</button></aside>
@@ -515,6 +522,7 @@ window.DevCoordinatorProjectExplorer = (() => {
       let request;
       try {
         await loadStatus();
+        restoreDocumentScroll(view);
         if (!alive() || !view.dialog.isConnected) return;
         const targets = await Promise.all(ids.map(worktree_id => api('project.checkout.get', {project_id:s.projectId,worktree_id})));
         if (!alive() || !view.dialog.isConnected) return;
@@ -534,7 +542,7 @@ window.DevCoordinatorProjectExplorer = (() => {
       dialog.setAttribute('aria-labelledby', 'pe-removal-title');
       dialog.innerHTML = `<header><h2 id="pe-removal-title">${h('reviewRemoval')}</h2><button class="pe-icon-button" type="button" data-close aria-label="${escape(t('close'))}">${icon('x')}</button></header><ul class="pe-removal-targets">${targets.map(c => `<li><strong>${escape(c.relative_path)}</strong></li>`).join('')}</ul><p data-removal-progress role="status">${h('reviewingRemoval')}</p><p data-removal-error role="alert" hidden></p><footer><button class="btn" type="button" data-close>${h('cancel')}</button></footer>`;
       root.append(dialog); dialogs.add(dialog);
-      const view = { dialog, cancelled: false, finished: false, review: null };
+      const view = { dialog, cancelled: false, finished: false, review: null, documentScroll: { x: window.scrollX, y: window.scrollY } };
       const close = () => {
         view.cancelled = true; dialog.close(); dialog.remove();
         find('inspector').querySelector('[data-pe-remove]')?.focus({ preventScroll: true });
@@ -546,6 +554,7 @@ window.DevCoordinatorProjectExplorer = (() => {
       dialog.addEventListener('click', event => { if (event.target.closest('[data-close]')) close(); });
       dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
       dialog.showModal();
+      restoreDocumentScroll(view);
       return view;
     }
     function rememberReview(review, ids = []) {
@@ -600,6 +609,7 @@ window.DevCoordinatorProjectExplorer = (() => {
         catch (error) { if (dialog.isConnected) { const box = dialog.querySelector('[data-removal-error]'); box.hidden = false; box.textContent = error.message; event.target.disabled = false; } else fault(error); }
       };
       dialog.querySelector('[data-close]').focus({ preventScroll: true });
+      restoreDocumentScroll(s.reviewView?.dialog === dialog ? s.reviewView : null);
     }
     function paintRemovalJob() {
       if (!alive() || !s.removalJob) return;
