@@ -116,7 +116,7 @@ function badge(text, kind) {
 }
 
 function destinationLink(label, href) {
-  const keys = {"Deployments":"destination_deployments","Plan":"destination_plan","Progress":"destination_progress","Codex Usage":"destination_usage","Performance":"destination_performance","Decisions":"destination_decisions","Sketches":"destination_sketches","Glossary":"destination_glossary","Tests":"destination_tests","Health":"destination_health","Bugs":"destination_bugs","Administration":"destination_admin","Shared glossary":"destination_shared_glossary"};
+  const keys = {"Deployments":"destination_deployments","Plan":"destination_plan","Progress":"destination_progress","Codex Usage":"destination_usage","Performance":"destination_performance","Decisions":"destination_decisions","Sketches":"destination_sketches","Glossary":"destination_glossary","Tests":"destination_tests","Health":"destination_health","Bugs":"destination_bugs","Administration":"destination_admin","Shared glossary":"destination_shared_glossary","Agent hub":"destination_agent_hub"};
   return `<a class="destination-link" href="${esc(href)}">${keys[label] ? window.DevCoordinatorI18n.markup('common.' + keys[label]) : esc(label)}</a>`;
 }
 
@@ -353,6 +353,7 @@ function currentDestinationHeading() {
     glossary: ['Glossary', '#/glossary'],
     tests: ['Tests', '#/tests'], health: ['Health', '#/health'], storage: ['Storage', '#/storage'],
     bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'], 'agent-settings': ['Agent Settings', '#/agent-settings'], requests: ['Feature requests', '#/requests'],
+    'agent-hub': ['Agent hub', '#/agent-hub'],
   };
   const destination = destinations[view] || destinations.deployments;
   return pageHeading(destination[0], destination[1], view === 'health' && arg === 'containers' ? 'Containers' : '');
@@ -5107,6 +5108,16 @@ window.addEventListener('resize', () => {
   if (!composer || composer.hidden) return;
   openEvidenceComposer(undefined, false);
 });
+const viewAgentHub = guard(async (signal) => {
+  await import('./agent-hub.js');
+  if (signal.aborted) return;
+  return window.DevCoordinatorAgentHub.mount(main, {
+    api: apiPage,
+    administrator: state.who?.administrator === true,
+    signal,
+  });
+});
+
 async function render() {
   await languageReady;
   await window.DevCoordinatorI18n.route();
@@ -5141,6 +5152,7 @@ async function render() {
   main.classList.toggle('project-explorer-page', view === 'projects');
   document.body.classList.toggle('project-explorer-shell', view === 'projects');
   main.classList.toggle('tickets-page', view === 'requests');
+  main.classList.toggle('agent-hub-page', view === 'agent-hub');
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -5180,6 +5192,7 @@ async function render() {
   if (view === 'projects') return window.DevCoordinatorProjectExplorer.mount(main, { api: apiPage, signal, projectId: arg || null, identity: state.who });
   if (view === 'bugs') return viewBugs();
   if (view === 'requests') return window.DevCoordinatorTickets.mount(main, {api:(operation,params)=>api(operation,params,false),administrator:state.who?.administrator,signal});
+  if (view === 'agent-hub') return viewAgentHub(signal);
   if (view === 'admin') return viewAdmin();
   if (view === 'agent-settings') return viewAgentSettings();
   location.hash = '#/projects';

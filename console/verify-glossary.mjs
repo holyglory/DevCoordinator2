@@ -14,6 +14,7 @@ import { canonicalJson } from '../edge/lib/routes-store.mjs';
 import { verifyHealth, healthReadFixture } from './verify-health.mjs';
 import { verifySketches } from './verify-sketches.mjs';
 import { verifyProjects } from './verify-projects.mjs';
+import { verifyAgentHub } from './verify-agent-hub.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const out = path.resolve(process.env.GLOSSARY_VERIFY_OUT || path.join(os.tmpdir(), 'dc2-glossary-verification'));
@@ -33,6 +34,7 @@ let socketServer;
 let bridge;
 let temporary;
 let nativeTemporary;
+let fixtureOffline = false;
 const pending = new Map();
 
 function request(operation, params = {}, identity = 'owner@example.test') {
@@ -81,7 +83,7 @@ async function main() {
     await fs.writeFile(path.join(nativeTemporary, 'project-console-fixture.marker'), 'project-console-fixture-v1\n', {mode:0o600,flag:'wx'});
   }
   const startBridge = () => {
-  bridge = projectsNative ? spawn('/usr/bin/sudo', ['-n', '/usr/bin/env', `DEVCOORDINATOR2_PROJECT_CONSOLE_TEST_ROOT=${nativeTemporary}`, `DEVCOORDINATOR2_TEST_POSTGRES_UID=${process.getuid()}`, `DEVCOORDINATOR2_TEST_POSTGRES_GID=${process.getgid()}`, `TMPDIR=${path.join(nativeTemporary,'tmp')}`, `DEVCOORDINATOR2_TEST_POSTGRES_ROOT=${path.join(nativeTemporary,'postgres')}`, fixture, nativeTemporary, 'projects-native'], {stdio:['pipe','pipe','pipe']}) : spawn(fixture, [path.join(temporary, 'authority'), ...(process.env.CONSOLE_VERIFY_PROJECTS_ONLY ? ['projects'] : process.env.CONSOLE_VERIFY_HEALTH_ONLY ? ['health'] : process.env.CONSOLE_VERIFY_SKETCHES_ONLY ? ['sketches'] : [])], { stdio: ['pipe', 'pipe', 'pipe'] });
+  bridge = projectsNative ? spawn('/usr/bin/sudo', ['-n', '/usr/bin/env', `DEVCOORDINATOR2_PROJECT_CONSOLE_TEST_ROOT=${nativeTemporary}`, `DEVCOORDINATOR2_TEST_POSTGRES_UID=${process.getuid()}`, `DEVCOORDINATOR2_TEST_POSTGRES_GID=${process.getgid()}`, `TMPDIR=${path.join(nativeTemporary,'tmp')}`, `DEVCOORDINATOR2_TEST_POSTGRES_ROOT=${path.join(nativeTemporary,'postgres')}`, fixture, nativeTemporary, 'projects-native'], {stdio:['pipe','pipe','pipe']}) : spawn(fixture, [path.join(temporary, 'authority'), ...(process.env.CONSOLE_VERIFY_PROJECTS_ONLY ? ['projects'] : process.env.CONSOLE_VERIFY_HEALTH_ONLY ? ['health'] : process.env.CONSOLE_VERIFY_SKETCHES_ONLY ? ['sketches'] : process.env.CONSOLE_VERIFY_AGENT_HUB_ONLY ? ['agent-hub'] : [])], { stdio: ['pipe', 'pipe', 'pipe'] });
   bridge.stderr.on('data', (bytes) => fs.appendFile(path.join(out, 'backend.stderr.log'), bytes));
   bridge.on('exit', (code) => { for (const callback of pending.values()) callback.reject(new Error(`Fixture exited with ${code}`)); pending.clear(); });
   readline.createInterface({ input: bridge.stdout }).on('line', (line) => {
@@ -97,6 +99,7 @@ async function main() {
   await call('ping');
   const socketPath = path.join(temporary, 'bridge.sock');
   socketServer = net.createServer({ allowHalfOpen: true }, (socket) => {
+    if (fixtureOffline) { socket.destroy(); return; }
     let buffer = '';
     socket.on('data', (bytes) => {
       buffer += bytes.toString();
@@ -123,6 +126,11 @@ async function main() {
   await context.addCookies([cookieFor('owner@example.test')]);
   const page = await context.newPage();
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  if (process.env.CONSOLE_VERIFY_AGENT_HUB_ONLY) {
+    await verifyAgentHub({page,browser,base,call,request,cookieFor,out,root,temporary,restart,setOffline:value=>{fixtureOffline=value;}});
+    assert.deepEqual(pageErrors, [], 'Agent hub has no browser exceptions');
+    await context.close(); return;
+  }
   if (process.env.CONSOLE_VERIFY_PROJECTS_ONLY) {
     await verifyProjects({ page, browser, base, call, request, check, cookieFor, out, root, temporary });
     await check('Project explorer has no browser exceptions', async () => assert.deepEqual(pageErrors, []), page);

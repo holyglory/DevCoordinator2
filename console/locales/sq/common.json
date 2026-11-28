@@ -65,6 +65,7 @@
   "destination_tests": "Testet",
   "destination_health": "Shëndeti",
   "destination_bugs": "Defektet",
+  "destination_agent_hub": "Qendra e agjentëve",
   "destination_admin": "Administrim",
   "destination_shared_glossary": "Fjalor i përbashkët",
   "expired": "E skaduar",

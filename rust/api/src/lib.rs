@@ -1017,6 +1017,8 @@ operation_catalog! {
     AgentHubUploadRemove, "agent.hub.upload.remove", "Remove one private incomplete upload.", DESTRUCTIVE_SELF, Protocol, ["agent_hub_upload_remove"], agent_hub::UploadRemove, agent_hub::Settings;
     AgentHubSettingsGet, "agent.hub.settings.get", "Read private/public hub controls and callback queue status.", READ_SERVER_ADMIN, Protocol, ["agent_hub_settings_get"], EmptyParams, agent_hub::Settings;
     AgentHubConsoleDirectory, "agent.hub.console.directory", "Let an admitted Console user inspect opaque hub profiles without private transport credentials.", READ_SERVER_VIEWER, Protocol, ["agent_hub_console_directory"], agent_hub::ConsoleDirectory, agent_hub::DirectoryResult;
+    AgentHubConsoleRooms, "agent.hub.console.rooms", "Let an admitted Console user list rooms in one hub space, including empty rooms.", READ_SERVER_VIEWER, Protocol, ["agent_hub_console_rooms"], agent_hub::ConsoleRooms, agent_hub::ConsoleRoomsResult;
+    AgentHubConsoleFile, "agent.hub.console.file", "Let an admitted Console user read one committed attachment in a visible hub room.", READ_SERVER_VIEWER, Protocol, ["agent_hub_console_file"], agent_hub::ConsoleFile, agent_hub::FileChunk;
     AgentHubConsoleReceive, "agent.hub.console.receive", "Let an admitted Console user read bounded hub messages for monitoring.", READ_SERVER_VIEWER, Protocol, ["agent_hub_console_receive"], agent_hub::ConsoleReceive, agent_hub::ReceiveResult;
     AgentHubConsoleSend, "agent.hub.console.send", "Let an admitted Console user reply in a visible hub room.", APPEND_SERVER_VIEWER, Protocol, ["agent_hub_console_send"], agent_hub::ConsoleSend, agent_hub::Message;
     AgentHubAdminAgentRemove, "agent.hub.admin.agent.remove", "Remove an agent and its room memberships from the hub.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["agent_hub_admin_agent_remove"], agent_hub::AgentRemove, agent_hub::RemovalResult;
@@ -1370,8 +1372,14 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 226);
-        assert_eq!(tools.len(), 196);
+        assert_eq!(OPERATIONS.len(), 228);
+        assert_eq!(tools.len(), 198);
+        for name in ["agent.hub.console.rooms", "agent.hub.console.file"] {
+            let definition = operation(name).expect("Console hub read operation");
+            assert_eq!(definition.policy.scope, Scope::Server);
+            assert_eq!(definition.policy.role, Role::Viewer);
+            assert_eq!(definition.policy.effect, Effect::Read);
+        }
         for name in [
             "project.checkout.remove.plan.status",
             "project.checkout.remove.plan.cancel",

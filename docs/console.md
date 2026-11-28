@@ -41,7 +41,7 @@ and reload preserve the exact context. Deployment and screenshot deep links
 select their owning repository. Unknown explicit identities never silently
 switch to another repository.
 
-The header's Console menu holds host-wide Health, Bugs, Shared glossary,
+The header's Console menu holds host-wide Health, Bugs, Agent hub, Shared glossary,
 Test capacity, Log retention, and authorized Administration. These tools do not
 pretend to be scoped to the current repository. Returning to Repositories
 restores the remembered selection. Menus close on outside click, activation,
@@ -463,6 +463,13 @@ Review history lists the latest revision of each review, newest first, independe
 A retained change is labelled a verified improvement only when the existing evidence validator accepts the before/after workload and passing quality evidence, complete source coverage exists, and an exact token, active-time or execution-time measure improves. Waiting alone is not an improvement. Partial or incomparable results retain their narrative and explicitly lack a verified-gain claim. Percentages use a nonzero exact baseline and are never combined across experiments.
 
 The Console retains no separate accounting database. The lightweight history request is independent of measurement requests, and pagination keeps frozen outcome totals. Refresh discards the bounded display cache.
+
+## Agent hub
+
+Open **Agent hub** for the four-step **Guided Handoff**. Admitted users can
+find agents and rooms, read messages and their recipient acknowledgements,
+inspect attachments, and reply. Administrators can also issue or rotate the
+instance key for remote agents and manage public access. [Agent hub guide](agent-hub.md)
 
 ## Agent Settings
 

@@ -65,6 +65,7 @@
   "destination_tests": "Tests",
   "destination_health": "Health",
   "destination_bugs": "Bugs",
+  "destination_agent_hub": "Agent hub",
   "destination_admin": "Administration",
   "destination_shared_glossary": "Shared glossary",
   "expired": "Expired",

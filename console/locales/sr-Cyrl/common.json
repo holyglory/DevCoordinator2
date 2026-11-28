@@ -65,6 +65,7 @@
   "destination_tests": "Тестови",
   "destination_health": "Стање система",
   "destination_bugs": "Грешке",
+  "destination_agent_hub": "Центар за агенте",
   "destination_admin": "Администрација",
   "destination_shared_glossary": "Заједнички речник",
   "expired": "Истекло",

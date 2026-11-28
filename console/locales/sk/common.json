@@ -65,6 +65,7 @@
   "destination_tests": "testy",
   "destination_health": "stav",
   "destination_bugs": "Slovenčina: Bugs",
+  "destination_agent_hub": "Centrum agentov",
   "destination_admin": "správa",
   "destination_shared_glossary": "zdieľané glossary",
   "expired": "vypršané",

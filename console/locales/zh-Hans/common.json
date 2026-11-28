@@ -65,6 +65,7 @@
   "destination_tests": "测试",
   "destination_health": "系统状态",
   "destination_bugs": "缺陷",
+  "destination_agent_hub": "智能体中心",
   "destination_admin": "管理",
   "destination_shared_glossary": "共享术语表",
   "expired": "已过期",

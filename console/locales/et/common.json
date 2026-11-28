@@ -65,6 +65,7 @@
   "destination_tests": "Testid",
   "destination_health": "Seisund",
   "destination_bugs": "Vead",
+  "destination_agent_hub": "Agentide keskus",
   "destination_admin": "Haldus",
   "destination_shared_glossary": "Jagatud sõnastik",
   "expired": "Aegunud",

@@ -65,6 +65,7 @@
   "destination_tests": "Tester",
   "destination_health": "Gesondheet",
   "destination_bugs": "Feeler",
+  "destination_agent_hub": "Agentenzentral",
   "destination_admin": "Administratioun",
   "destination_shared_glossary": "gedeelt glossary",
   "expired": "ofgelaf",

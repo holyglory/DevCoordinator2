@@ -65,6 +65,7 @@
   "destination_tests": "Tesztek",
   "destination_health": "Állapot",
   "destination_bugs": "Hibák",
+  "destination_agent_hub": "Ügynökközpont",
   "destination_admin": "Adminisztráció",
   "destination_shared_glossary": "Megosztott szójegyzék",
   "expired": "Lejárt",

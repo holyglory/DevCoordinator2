@@ -65,6 +65,7 @@
   "destination_tests": "Testy",
   "destination_health": "Stav systému",
   "destination_bugs": "Chyby",
+  "destination_agent_hub": "Centrum agentů",
   "destination_admin": "Správa",
   "destination_shared_glossary": "Sdílený slovník",
   "expired": "Platnost vypršela",

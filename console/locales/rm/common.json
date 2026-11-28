@@ -65,6 +65,7 @@
   "destination_tests": "tests",
   "destination_health": "salute",
   "destination_bugs": "Rumantsch: Bugs",
+  "destination_agent_hub": "Center d’agents",
   "destination_admin": "administraziun",
   "destination_shared_glossary": "partagì glossary",
   "expired": "scadì",

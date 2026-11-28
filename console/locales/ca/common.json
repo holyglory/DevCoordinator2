@@ -65,6 +65,7 @@
   "destination_tests": "Proves",
   "destination_health": "Estat",
   "destination_bugs": "Errors",
+  "destination_agent_hub": "Centre d’agents",
   "destination_admin": "Administració",
   "destination_shared_glossary": "Glossari compartit",
   "expired": "Expirat",

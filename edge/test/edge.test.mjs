@@ -207,6 +207,17 @@ test('sign-in admits the invited identity via the daemon and enforces grants per
   assert.equal(capacity.status, 200);
   assert.equal(JSON.parse(capacity.body).data.echoed, 'test.capacity.get');
   assert.ok(daemonCalls.some((c) => c.operation === 'test.capacity.get'));
+  for (const [operation, body] of [
+    ['agent.hub.console.rooms', { space: 'private', limit: 1 }],
+    ['agent.hub.console.file', { space: 'private', room_id: 'room', file_id: 'file', offset: 0 }],
+  ]) {
+    const response = await get(`/api/v3/${operation}`, { cookie: session, method: 'POST', body });
+    assert.equal(response.status, 200);
+    assert.equal(JSON.parse(response.body).data.echoed, operation);
+    assert.ok(daemonCalls.some((call) => call.operation === operation
+      && call.client.identity === 'dev@example.test'));
+    assert.equal((await get(`/api/v3/${operation}`, { method: 'POST', body })).status, 401);
+  }
   const logCatalog = await get('/api/v3/test.log.catalog', {
     cookie: session, method: 'POST', body: { path: '/repo', run_id: 't-run' },
   });
@@ -251,6 +262,14 @@ test('dedicated agent hub endpoint enforces its action allowlist and bearer forw
   const second = daemonCalls.at(-1);
   assert.equal(second.params.bearer, 'current-key');
   assert.equal(second.params.action.kind, 'directory');
+  for (const kind of ['console_rooms', 'console_file']) {
+    const response = await get('/.well-known/devcoordinator2/agent-hub', {
+      method: 'POST', body: { action: { kind, space: 'private' } },
+    });
+    assert.equal(response.status, 400);
+    assert.equal(daemonCalls.some((call) => call.operation === 'agent.hub.remote'
+      && call.params?.action?.kind === kind), false);
+  }
   const malformedAuth = await get('/.well-known/devcoordinator2/agent-hub', { method: 'POST', authorization: 'Basic nope', body: { action: { kind: 'directory', space: 'public' } } });
   assert.equal(malformedAuth.status, 400);
 });

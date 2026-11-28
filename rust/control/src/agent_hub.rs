@@ -166,10 +166,17 @@ impl AgentHubService {
         &self,
         request: api::Directory,
     ) -> Result<api::DirectoryResult, ProtocolError> {
-        self.expire_leases()?;
         if request.space == api::Space::Public && !self.public_available()? {
             return Err(hub_disabled());
         }
+        self.directory_projection(request)
+    }
+
+    fn directory_projection(
+        &self,
+        request: api::Directory,
+    ) -> Result<api::DirectoryResult, ProtocolError> {
+        self.expire_leases()?;
         let limit = bounded_page(request.limit);
         let after = request.after;
         let space = space_text(request.space);
@@ -186,6 +193,7 @@ impl AgentHubService {
             agents: profiles,
             next,
             public_enabled: self.public_enabled()?,
+            public_paused: None,
         })
     }
 
@@ -322,7 +330,14 @@ impl AgentHubService {
                     "UPDATE agent_hub_deliveries SET acknowledged_at=$1 WHERE delivery_id=$2 AND recipient_agent_id=$3",
                     crate::database::params![now, id, recipient_id],
                 )?;
-                tx.execute("DELETE FROM agent_hub_outbox WHERE delivery_id=$1", [&id])?;
+                tx.execute(
+                    "DELETE FROM agent_hub_outbox
+                     WHERE delivery_id=$1 AND EXISTS (
+                         SELECT 1 FROM agent_hub_deliveries d
+                         WHERE d.delivery_id=$1 AND d.recipient_agent_id=$2
+                           AND d.acknowledged_at IS NOT NULL)",
+                    crate::database::params![id, recipient_id],
+                )?;
             }
             Ok(())
         }).map_err(database_error)?;
@@ -400,19 +415,33 @@ impl AgentHubService {
         caller: &Caller,
     ) -> Result<api::FileChunk, ProtocolError> {
         let owner = self.authenticate(&request.auth, caller, None)?;
-        let owner_id = owner.agent_id.clone();
-        let offset = request.offset;
-        let upload_id = request.upload_id.clone();
-        let file_id = request.file_id.clone();
+        let position = file_chunk_position(request.offset)?;
         self.database.read(move |db| {
-            if let Some(id) = upload_id {
-                let (name,ctype,size,digest,content):(String,String,u32,String,Vec<u8>)=db.query_row("SELECT name,content_type,byte_size,sha256,content FROM agent_hub_uploads WHERE upload_id=$1 AND owner_agent_id=$2", crate::database::params![id,owner_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
-                return file_chunk(api::Attachment{attachment_id:id,name,content_type:ctype,byte_size:size,sha256:digest},content,offset);
-            }
-            let id=file_id.ok_or_else(|| DatabaseError::Domain(hub_attachment_invalid("upload_id or file_id is required")))?;
-            let (attachment,message_room,name,ctype,size,digest,content):(String,String,String,String,u32,String,Vec<u8>)=db.query_row("SELECT a.attachment_id,m.room_id,a.name,a.content_type,a.byte_size,a.sha256,a.content FROM agent_hub_attachments a JOIN agent_hub_messages m ON m.message_id=a.message_id JOIN agent_hub_room_members rm ON rm.room_id=m.room_id WHERE a.attachment_id=$1 AND rm.agent_id=$2", crate::database::params![id,owner_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
-            let _ = (message_room, attachment);
-            file_chunk(api::Attachment{attachment_id:id,name,content_type:ctype,byte_size:size,sha256:digest},content,offset)
+            let (attachment, available_size, content) = if let Some(id) = request.upload_id {
+                db.query_row(
+                    "SELECT upload_id,name,content_type,byte_size,sha256,octet_length(content),
+                            substring(content from $3::integer for $4::integer)
+                     FROM agent_hub_uploads
+                     WHERE upload_id=$1 AND owner_agent_id=$2",
+                    crate::database::params![id, owner.agent_id, position, MAX_CHUNK_BYTES as i64],
+                    file_chunk_row,
+                ).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?
+            } else {
+                let id = request.file_id.ok_or_else(|| DatabaseError::Domain(
+                    hub_attachment_invalid("upload_id or file_id is required")
+                ))?;
+                db.query_row(
+                    "SELECT a.attachment_id,a.name,a.content_type,a.byte_size,a.sha256,
+                            octet_length(a.content),substring(a.content from $3::integer for $4::integer)
+                     FROM agent_hub_attachments a
+                     JOIN agent_hub_messages m ON m.message_id=a.message_id
+                     JOIN agent_hub_room_members rm ON rm.room_id=m.room_id
+                     WHERE a.attachment_id=$1 AND rm.agent_id=$2",
+                    crate::database::params![id, owner.agent_id, position, MAX_CHUNK_BYTES as i64],
+                    file_chunk_row,
+                ).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?
+            };
+            file_chunk(attachment, available_size, content, request.offset)
         }).map_err(database_error)
     }
 
@@ -491,37 +520,183 @@ impl AgentHubService {
         &self,
         request: api::ConsoleDirectory,
     ) -> Result<api::DirectoryResult, ProtocolError> {
-        self.directory(api::Directory {
+        let mut result = self.directory_projection(api::Directory {
             space: request.space,
             after: request.after,
             limit: request.limit,
-        })
+        })?;
+        result.public_paused = Some(self.settings()?.public_paused);
+        Ok(result)
+    }
+
+    pub fn console_rooms(
+        &self,
+        request: api::ConsoleRooms,
+    ) -> Result<api::ConsoleRoomsResult, ProtocolError> {
+        let limit = bounded_page(request.limit);
+        let space = space_text(request.space);
+        let after = request.after;
+        let mut rooms = self
+            .database
+            .read(move |db| {
+                if let Some(ref cursor) = after {
+                    db.query_row(
+                        "SELECT room_id FROM agent_hub_rooms
+                     WHERE room_id=$1 AND space=$2 AND archived_at IS NULL",
+                        crate::database::params![cursor, space],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+                }
+                let mut statement = db.prepare(
+                    "SELECT r.room_id,r.space,r.name,r.created_at,count(m.agent_id)
+                 FROM agent_hub_rooms r
+                 LEFT JOIN agent_hub_room_members m ON m.room_id=r.room_id
+                 WHERE r.space=$1 AND r.archived_at IS NULL
+                   AND ($2::text IS NULL OR (r.created_at,r.room_id)>(
+                       SELECT p.created_at,p.room_id FROM agent_hub_rooms p
+                       WHERE p.room_id=$2 AND p.space=$1 AND p.archived_at IS NULL))
+                 GROUP BY r.room_id ORDER BY r.created_at,r.room_id LIMIT $3",
+                )?;
+                let rows = statement.query_map(
+                    crate::database::params![space, after, limit as i64 + 1],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, u32>(4)?,
+                        ))
+                    },
+                )?;
+                let mut rooms = Vec::new();
+                for row in rows {
+                    let (room_id, space, name, created_at, member_count) = row?;
+                    rooms.push(api::ConsoleRoom {
+                        room_id,
+                        space: parse_space(&space)?,
+                        name,
+                        created_at,
+                        member_count,
+                    });
+                }
+                Ok(rooms)
+            })
+            .map_err(database_error)?;
+        let has_more = rooms.len() > limit as usize;
+        rooms.truncate(limit as usize);
+        let next = has_more
+            .then(|| rooms.last().map(|room| room.room_id.clone()))
+            .flatten();
+        Ok(api::ConsoleRoomsResult { rooms, next })
+    }
+
+    pub fn console_file(&self, request: api::ConsoleFile) -> Result<api::FileChunk, ProtocolError> {
+        let position = file_chunk_position(request.offset)?;
+        self.database.read(move |db| {
+            let (attachment, available_size, content) = db.query_row(
+                "SELECT a.attachment_id,a.name,a.content_type,a.byte_size,a.sha256,
+                        octet_length(a.content),substring(a.content from $4::integer for $5::integer)
+                 FROM agent_hub_attachments a
+                 JOIN agent_hub_messages m ON m.message_id=a.message_id
+                 JOIN agent_hub_rooms r ON r.room_id=m.room_id
+                 WHERE a.attachment_id=$1 AND m.room_id=$2 AND r.space=$3
+                   AND r.archived_at IS NULL",
+                crate::database::params![request.file_id, request.room_id, space_text(request.space), position, MAX_CHUNK_BYTES as i64],
+                file_chunk_row,
+            ).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+            file_chunk(attachment, available_size, content, request.offset)
+        }).map_err(database_error)
     }
 
     pub fn console_receive(
         &self,
         request: api::ConsoleReceive,
     ) -> Result<api::ReceiveResult, ProtocolError> {
-        if request.space == api::Space::Public && !self.public_available()? {
-            return Err(hub_disabled());
-        }
         let limit = bounded_page(request.limit);
         let room = request.room_id;
         let after = request.after;
         let space = space_text(request.space);
-        let messages = self.database.read(move |db| {
-            let mut statement = db.prepare("SELECT m.message_id,m.room_id,m.body,m.created_at FROM agent_hub_messages m JOIN agent_hub_rooms r ON r.room_id=m.room_id WHERE r.space=$1 AND ($2::text IS NULL OR m.room_id=$2) AND ($3::text IS NULL OR (m.created_at,m.message_id)>(SELECT p.created_at,p.message_id FROM agent_hub_messages p JOIN agent_hub_rooms pr ON pr.room_id=p.room_id WHERE p.message_id=$3 AND pr.space=$1)) ORDER BY m.created_at,m.message_id LIMIT $4")?;
-            let mut result = Vec::new();let mut bytes=1024;
-            for row in statement.query_map(crate::database::params![space,room,after,limit as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))? {
-                let (message_id,room_id,body,created_at) = row?;
-                let delivery=api::Delivery { delivery_id: format!("console:{message_id}"), message: message_from_parts(db,&message_id,&room_id,&body,&created_at)?, acknowledged: false };
-                if !push_delivery_page(&mut result,delivery,&mut bytes)?{break;}
-            }
-            Ok(result)
-        }).map_err(database_error)?;
-        let next = messages
-            .last()
-            .map(|d| d.delivery_id.trim_start_matches("console:").to_owned());
+        let messages = self
+            .database
+            .read(move |db| {
+                if let Some(ref room_id) = room {
+                    db.query_row(
+                        "SELECT room_id FROM agent_hub_rooms
+                     WHERE room_id=$1 AND space=$2 AND archived_at IS NULL",
+                        crate::database::params![room_id, space],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+                }
+                if let Some(ref cursor) = after {
+                    db.query_row(
+                        "SELECT m.message_id FROM agent_hub_messages m
+                     JOIN agent_hub_rooms r ON r.room_id=m.room_id
+                     WHERE m.message_id=$1 AND r.space=$2 AND r.archived_at IS NULL
+                       AND ($3::text IS NULL OR m.room_id=$3)",
+                        crate::database::params![cursor, space, room],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+                }
+                let mut statement = db.prepare(
+                    "SELECT m.message_id,m.room_id,m.body,m.created_at,
+                        count(d.delivery_id),count(d.acknowledged_at)
+                 FROM agent_hub_messages m
+                 JOIN agent_hub_rooms r ON r.room_id=m.room_id
+                 LEFT JOIN agent_hub_deliveries d ON d.message_id=m.message_id
+                 WHERE r.space=$1 AND r.archived_at IS NULL
+                   AND ($2::text IS NULL OR m.room_id=$2)
+                   AND ($3::text IS NULL OR (m.created_at,m.message_id)>(
+                       SELECT p.created_at,p.message_id FROM agent_hub_messages p
+                       JOIN agent_hub_rooms pr ON pr.room_id=p.room_id
+                       WHERE p.message_id=$3 AND pr.space=$1))
+                 GROUP BY m.message_id ORDER BY m.created_at,m.message_id LIMIT $4",
+                )?;
+                let rows = statement.query_map(
+                    crate::database::params![space, room, after, limit as i64],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, u32>(4)?,
+                            row.get::<_, u32>(5)?,
+                        ))
+                    },
+                )?;
+                let mut result = Vec::new();
+                let mut bytes = 1024;
+                for row in rows {
+                    let (message_id, room_id, body, created_at, recipients, acknowledged) = row?;
+                    let delivery = api::Delivery {
+                        delivery_id: format!("console:{message_id}"),
+                        message: message_from_parts(db, &message_id, &room_id, &body, &created_at)?,
+                        acknowledged: recipients > 0 && recipients == acknowledged,
+                        receipt_counts: Some(api::ReceiptCounts {
+                            recipients,
+                            acknowledged,
+                        }),
+                    };
+                    if !push_delivery_page(&mut result, delivery, &mut bytes)? {
+                        break;
+                    }
+                }
+                Ok(result)
+            })
+            .map_err(database_error)?;
+        let next = messages.last().map(|delivery| {
+            delivery
+                .delivery_id
+                .trim_start_matches("console:")
+                .to_owned()
+        });
         Ok(api::ReceiveResult {
             deliveries: messages,
             next,
@@ -535,7 +710,10 @@ impl AgentHubService {
             ));
         }
         let room = self.room(&request.room_id)?;
-        self.ensure_public(room.space)?;
+        if room.space != request.space {
+            return Err(hub_not_found());
+        }
+        self.ensure_public(request.space)?;
         self.send_inner(None, None, &request.room_id, &request.body, &[], None)
     }
 
@@ -816,7 +994,7 @@ impl AgentHubService {
         let room = room_id.map(str::to_owned);
         let after = after.map(str::to_owned);
         let limit = bounded_page(limit);
-        let deliveries=self.database.read(move |db| { let mut q=db.prepare("SELECT d.delivery_id,d.message_id,d.acknowledged_at,m.room_id,m.body,m.created_at FROM agent_hub_deliveries d JOIN agent_hub_messages m ON m.message_id=d.message_id WHERE d.recipient_agent_id=$1 AND ($2::text IS NULL OR m.room_id=$2) AND ($3::text IS NULL OR (d.created_at,d.delivery_id)>(SELECT p.created_at,p.delivery_id FROM agent_hub_deliveries p WHERE p.delivery_id=$3 AND p.recipient_agent_id=$1)) ORDER BY d.created_at,d.delivery_id LIMIT $4")?; let mut out=Vec::new();let mut bytes=1024; for row in q.query_map(crate::database::params![recipient,room,after,limit as i64],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))? { let (delivery_id,message_id,acked,room_id,body,created)=row?;let delivery=api::Delivery{delivery_id,message:message_from_parts(db,&message_id,&room_id,&body,&created)?,acknowledged:acked.is_some()}; if !push_delivery_page(&mut out,delivery,&mut bytes)?{break;} } Ok(out) }).map_err(database_error)?;
+        let deliveries=self.database.read(move |db| { let mut q=db.prepare("SELECT d.delivery_id,d.message_id,d.acknowledged_at,m.room_id,m.body,m.created_at FROM agent_hub_deliveries d JOIN agent_hub_messages m ON m.message_id=d.message_id WHERE d.recipient_agent_id=$1 AND ($2::text IS NULL OR m.room_id=$2) AND ($3::text IS NULL OR (d.created_at,d.delivery_id)>(SELECT p.created_at,p.delivery_id FROM agent_hub_deliveries p WHERE p.delivery_id=$3 AND p.recipient_agent_id=$1)) ORDER BY d.created_at,d.delivery_id LIMIT $4")?; let mut out=Vec::new();let mut bytes=1024; for row in q.query_map(crate::database::params![recipient,room,after,limit as i64],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))? { let (delivery_id,message_id,acked,room_id,body,created)=row?;let delivery=api::Delivery{delivery_id,message:message_from_parts(db,&message_id,&room_id,&body,&created)?,acknowledged:acked.is_some(),receipt_counts:None}; if !push_delivery_page(&mut out,delivery,&mut bytes)?{break;} } Ok(out) }).map_err(database_error)?;
         let next = deliveries.last().map(|d| d.delivery_id.clone());
         Ok(api::ReceiveResult { deliveries, next })
     }
@@ -1242,29 +1420,61 @@ fn attachments_for(
     .and_then(|i| i.collect::<Result<Vec<_>, _>>())
     .map_err(DatabaseError::from)
 }
+fn file_chunk_position(offset: u64) -> Result<i64, ProtocolError> {
+    if offset > u64::from(MAX_FILE_BYTES) {
+        return Err(hub_attachment_invalid("file offset exceeds its size"));
+    }
+    offset
+        .checked_add(1)
+        .and_then(|position| i32::try_from(position).ok())
+        .map(i64::from)
+        .ok_or_else(|| hub_attachment_invalid("file offset exceeds its size"))
+}
+
+fn file_chunk_row(row: &Row<'_>) -> crate::database::Result<(api::Attachment, u64, Vec<u8>)> {
+    Ok((
+        api::Attachment {
+            attachment_id: row.get(0)?,
+            name: row.get(1)?,
+            content_type: row.get(2)?,
+            byte_size: row.get(3)?,
+            sha256: row.get(4)?,
+        },
+        row.get(5)?,
+        row.get(6)?,
+    ))
+}
+
 fn file_chunk(
     attachment: api::Attachment,
+    available_size: u64,
     content: Vec<u8>,
     offset: u64,
 ) -> Result<api::FileChunk, DatabaseError> {
-    if offset > content.len() as u64 {
-        return Err(DatabaseError::Domain(hub_attachment_invalid(
-            "file offset exceeds its size",
+    let remaining = available_size.checked_sub(offset).ok_or_else(|| {
+        DatabaseError::Domain(hub_attachment_invalid("file offset exceeds its size"))
+    })?;
+    let expected = remaining.min(MAX_CHUNK_BYTES as u64) as usize;
+    if content.len() != expected {
+        return Err(DatabaseError::Domain(internal(
+            "stored hub file chunk length does not match",
         )));
     }
-    let end = (offset as usize + MAX_CHUNK_BYTES).min(content.len());
+    let end = offset.checked_add(content.len() as u64).ok_or_else(|| {
+        DatabaseError::Domain(hub_attachment_invalid("file offset exceeds its size"))
+    })?;
     Ok(api::FileChunk {
         attachment,
         offset,
-        next_offset: (end < content.len()).then_some(end as u64),
-        data_base64: STANDARD.encode(&content[offset as usize..end]),
+        next_offset: (end < available_size).then_some(end),
+        data_base64: STANDARD.encode(content),
     })
 }
-fn console_profile() -> api::AgentProfile {
+fn console_profile(space: api::Space) -> api::AgentProfile {
     api::AgentProfile {
         agent_id: "console".into(),
         handle: "console".into(),
-        space: api::Space::Private,
+        space,
         display_name: "Console".into(),
         repository_label: None,
         domain_label: None,
@@ -1282,15 +1492,16 @@ fn message_from_parts(
     body: &str,
     created_at: &str,
 ) -> Result<api::Message, DatabaseError> {
-    let sender: Option<String> = db.query_row(
-        "SELECT sender_agent_id FROM agent_hub_messages WHERE message_id=$1",
+    let (sender, space): (Option<String>, String) = db.query_row(
+        "SELECT m.sender_agent_id,r.space FROM agent_hub_messages m JOIN agent_hub_rooms r ON r.room_id=m.room_id WHERE m.message_id=$1",
         [message_id],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    let space = parse_space(&space)?;
     let profile = sender
         .and_then(|id| agent_row_from_id(db, &id).ok())
         .map(|a| a.to_profile())
-        .unwrap_or_else(console_profile);
+        .unwrap_or_else(|| console_profile(space));
     Ok(api::Message {
         message_id: message_id.into(),
         room_id: room_id.into(),
@@ -1744,6 +1955,16 @@ mod tests {
         service
             .ack(
                 api::Ack {
+                    auth: auth(&first),
+                    delivery_ids: vec![received.deliveries[0].delivery_id.clone()],
+                },
+                &local(),
+            )
+            .unwrap();
+        assert_eq!(service.settings().unwrap().callback_outbox_pending, 1);
+        service
+            .ack(
+                api::Ack {
                     auth: auth(&second),
                     delivery_ids: vec![received.deliveries[0].delivery_id.clone()],
                 },
@@ -1963,45 +2184,131 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(too_large.code, ErrorCode::HubAttachmentInvalid);
-        let bytes = b"hello";
-        let digest = hex_digest(bytes);
+        let bytes = (0..MAX_CHUNK_BYTES + 5)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
         let upload = service
             .upload_start(
                 api::UploadStart {
                     auth: auth(&owner),
                     request_key: "ok".into(),
-                    name: "hello.txt".into(),
-                    content_type: "text/plain".into(),
+                    name: "chunked.bin".into(),
+                    content_type: "application/octet-stream".into(),
                     byte_size: bytes.len() as u32,
-                    sha256: digest,
+                    sha256: hex_digest(&bytes),
                 },
                 &local(),
             )
             .unwrap();
-        let chunk = service
+        let wrong_offset = service
             .upload_chunk(
                 api::UploadChunk {
                     auth: auth(&owner),
                     upload_id: upload.upload_id.clone(),
-                    offset: 0,
-                    data_base64: STANDARD.encode(bytes),
+                    offset: 1,
+                    data_base64: STANDARD.encode(&bytes[..1]),
                 },
                 &local(),
             )
-            .unwrap();
-        assert!(chunk.complete);
-        let file = service
-            .upload_file(
+            .unwrap_err();
+        assert_eq!(wrong_offset.code, ErrorCode::HubAttachmentInvalid);
+        for (index, content) in bytes.chunks(MAX_CHUNK_BYTES).enumerate() {
+            let chunk = service
+                .upload_chunk(
+                    api::UploadChunk {
+                        auth: auth(&owner),
+                        upload_id: upload.upload_id.clone(),
+                        offset: (index * MAX_CHUNK_BYTES) as u32,
+                        data_base64: STANDARD.encode(content),
+                    },
+                    &local(),
+                )
+                .unwrap();
+            assert_eq!(chunk.complete, index == 1);
+        }
+        let assert_chunks = |read: &dyn Fn(u64) -> Result<api::FileChunk, ProtocolError>| {
+            let first = read(0).unwrap();
+            assert_eq!(
+                STANDARD.decode(first.data_base64).unwrap(),
+                &bytes[..MAX_CHUNK_BYTES]
+            );
+            assert_eq!(first.next_offset, Some(MAX_CHUNK_BYTES as u64));
+            let last = read(MAX_CHUNK_BYTES as u64).unwrap();
+            assert_eq!(
+                STANDARD.decode(last.data_base64).unwrap(),
+                &bytes[MAX_CHUNK_BYTES..]
+            );
+            assert_eq!(last.next_offset, None);
+            let eof = read(bytes.len() as u64).unwrap();
+            assert!(eof.data_base64.is_empty());
+            assert_eq!(eof.next_offset, None);
+            for offset in [
+                bytes.len() as u64 + 1,
+                u64::from(MAX_FILE_BYTES) + 1,
+                i32::MAX as u64 - 1,
+                i32::MAX as u64,
+                u64::MAX,
+            ] {
+                assert_eq!(
+                    read(offset).unwrap_err().code,
+                    ErrorCode::HubAttachmentInvalid
+                );
+            }
+        };
+        assert_chunks(&|offset| {
+            service.upload_file(
                 api::UploadFile {
                     auth: auth(&owner),
-                    upload_id: Some(upload.upload_id),
+                    upload_id: Some(upload.upload_id.clone()),
                     file_id: None,
-                    offset: 0,
+                    offset,
+                },
+                &local(),
+            )
+        });
+        let room = service
+            .room_create(
+                api::RoomCreate {
+                    auth: auth(&owner),
+                    space: api::Space::Private,
+                    name: "chunked room".into(),
+                    members: vec![],
                 },
                 &local(),
             )
             .unwrap();
-        assert_eq!(STANDARD.decode(file.data_base64).unwrap(), bytes);
+        let message = service
+            .send(
+                api::Send {
+                    auth: auth(&owner),
+                    room_id: room.room_id.clone(),
+                    body: "chunked attachment".into(),
+                    attachments: vec![upload.upload_id],
+                    client_message_id: None,
+                },
+                &local(),
+            )
+            .unwrap();
+        let file_id = &message.attachments[0].attachment_id;
+        assert_chunks(&|offset| {
+            service.upload_file(
+                api::UploadFile {
+                    auth: auth(&owner),
+                    upload_id: None,
+                    file_id: Some(file_id.clone()),
+                    offset,
+                },
+                &local(),
+            )
+        });
+        assert_chunks(&|offset| {
+            service.console_file(api::ConsoleFile {
+                space: api::Space::Private,
+                room_id: room.room_id.clone(),
+                file_id: file_id.clone(),
+                offset,
+            })
+        });
     }
 
     #[test]

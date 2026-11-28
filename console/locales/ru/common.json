@@ -65,6 +65,7 @@
   "destination_tests": "Тесты",
   "destination_health": "Состояние системы",
   "destination_bugs": "Ошибки",
+  "destination_agent_hub": "Центр агентов",
   "destination_admin": "Администрирование",
   "destination_shared_glossary": "Общий глоссарий",
   "expired": "Срок истёк",
