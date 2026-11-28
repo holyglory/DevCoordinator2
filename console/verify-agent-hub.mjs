@@ -30,9 +30,10 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
       // Never retain DOM dumps, traces, request/response bodies or entered keys.
       await page.screenshot({path:path.join(out,`${filename}.png`),fullPage:true,mask:masks()}).catch(()=>{});
       checks.push({name,status:'failed',duration_ms:Date.now()-start,evidence:filename});
-      // A failed preview must not block independent reply/recovery assertions.
+      // A failed modal case must not block independent later assertions.
       const close=page.locator('dialog[open] [data-hub-action="close-preview"]');
       if(await close.count())await close.click().catch(()=>{});
+      if(await page.locator('.hub-key-dialog[open]').count())await page.keyboard.press('Escape').catch(()=>{});
     }
     await fs.writeFile(path.join(out,'agent-hub-progress.json'),JSON.stringify({completed:checks.length,last:checks.at(-1)},null,2));
   };
@@ -109,13 +110,19 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     await page.evaluate(()=>navigator.clipboard.writeText(''));
   });
   await check('Generate, copy and dismiss reveal a real instance key exactly once',async()=>{
+    await page.setViewportSize({width:390,height:664});
+    try {
     await go();
     const settings=await call('agent.hub.settings.get');
     assert.equal(settings.current_key_created_at,null);
     await page.context().grantPermissions(['clipboard-read','clipboard-write']);
+    await page.locator(action('generate-key')).scrollIntoViewIfNeeded();
+    const scroll=await page.evaluate(()=>scrollY);
     await page.locator(action('generate-key')).click();
     await page.locator('[data-hub-key-value]').waitFor();
     firstKey=retainSecret(await page.locator('[data-hub-key-value]').evaluate(el=>el.value||el.textContent));
+    assert.ok(await page.evaluate(position=>Math.abs(scrollY-position)<=8,scroll),'Initial phone reveal preserves document position');
+    assert.equal(await page.evaluate(()=>document.activeElement?.id),'hub-key');
     assert.ok(firstKey.length>=32,'A key was generated');
     await page.locator(action('copy-key')).click();
     await page.locator('.hub-notice').filter({hasText:/copied/i}).waitFor();
@@ -125,6 +132,7 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     assert.equal(accepted.ok,true);
     await page.locator(action('dismiss-key')).click();
     assert.equal(await page.locator('[data-hub-key-value]').count(),0);
+    assert.equal(await page.evaluate(()=>document.activeElement?.dataset.hubAction),'generate-key');
     await go('key');
     assert.equal(await page.locator('[data-hub-key-value]').count(),0);
     assert.ok(!(await contents()).includes(firstKey));
@@ -132,26 +140,42 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     assert.ok(!stored.includes(firstKey));
     const browserStorage=await page.evaluate(()=>JSON.stringify({local:{...localStorage},session:{...sessionStorage}}));
     assert.ok(!browserStorage.includes(firstKey),'The one-time key is absent from browser storage');
+    } finally {await page.setViewportSize({width:1440,height:900});}
   });
-  await check('Rotation keeps the previous key valid for the recorded overlap',async()=>{
+  await check('Phone rotation keeps keys private, preserves the overlap and returns focus without a page jump',async()=>{
+    await page.setViewportSize({width:390,height:664});
+    try {
     await go('key');
     const before=await call('agent.hub.settings.get');
+    await page.locator(action('generate-key')).scrollIntoViewIfNeeded();
+    const scroll=await page.evaluate(()=>scrollY);
     await page.locator(action('generate-key')).click();
+    await page.locator('.hub-key-dialog[open] .hub-confirm').waitFor();
+    assert.ok(await page.evaluate(position=>Math.abs(scrollY-position)<=8,scroll),'Confirmation remains at the current document position');
     await page.locator(action('cancel-rotate')).click();
     assert.equal((await call('agent.hub.settings.get')).revision,before.revision);
     await page.locator(action('generate-key')).click();
     await page.locator(action('confirm-rotate')).click();
     await page.locator('[data-hub-key-value]').waitFor();
+    assert.ok(await page.evaluate(position=>Math.abs(scrollY-position)<=8,scroll),'Reveal remains at the current document position');
     secondKey=retainSecret(await page.locator('[data-hub-key-value]').evaluate(el=>el.value||el.textContent));
     assert.ok(secondKey!==firstKey,'Rotation generates another key');
     assert.equal((await remote({kind:'directory',space:'private'},secondKey)).ok,true);
     assert.equal((await remote({kind:'directory',space:'private'},firstKey)).ok,true);
     const settings=await call('agent.hub.settings.get');
     assert.ok(Date.parse(settings.previous_key_expires_at)>Date.now()+6*86400000);
-    await page.locator('.hub-step[data-hub-step="connect"]').click();
-    await page.locator('.hub-step[data-hub-step="key"]').click();
+    await go('connect');
+    await go('key');
     assert.equal(await page.locator('[data-hub-key-value]').count(),0);
     assert.equal((await remote({kind:'directory',space:'private'},secondKey)).ok,true);
+    await page.locator(action('generate-key')).click();await page.locator(action('confirm-rotate')).click();await page.locator('[data-hub-key-value]').waitFor();
+    const escapedKey=retainSecret(await page.locator('[data-hub-key-value]').evaluate(el=>el.value||el.textContent));
+    await page.keyboard.press('Escape');
+    await page.locator('.hub-key-dialog[open]').waitFor({state:'detached'});
+    assert.equal(await page.locator('[data-hub-key-value]').count(),0);
+    assert.equal(await page.evaluate(()=>document.activeElement?.dataset.hubAction),'generate-key');
+    assert.equal((await remote({kind:'directory',space:'private'},escapedKey)).ok,true);
+    } finally {await page.setViewportSize({width:1440,height:900});}
   });
   await check('Viewer access cannot create keys, change public settings or moderate rooms',async()=>{
     for(const [operation,params] of [

@@ -70,6 +70,8 @@ window.DevCoordinatorAgentHub = (() => {
       preview: null,
       activity: null,
       rotateConfirm: false,
+      keyDialog: false,
+      keyRequest: 0,
       previewTrigger: null,
     };
     const alive = () =>
@@ -77,6 +79,8 @@ window.DevCoordinatorAgentHub = (() => {
     function dispose() {
       disposed = true;
       state.secret = "";
+      state.keyDialog = false;
+      ++state.keyRequest;
       state.drafts.clear();
       clearInterval(timer);
       closePreview();
@@ -88,12 +92,14 @@ window.DevCoordinatorAgentHub = (() => {
       root.querySelector("#hub-key")?.replaceChildren();
       const secretInput = root.querySelector("#hub-key");
       if (secretInput) secretInput.value = "";
+      root.querySelector(".hub-key-dialog")?.remove();
       for (const url of urls) URL.revokeObjectURL(url);
       urls.clear();
       root.removeEventListener("click", onClick);
       root.removeEventListener("change", onChange);
       root.removeEventListener("input", onInput);
       root.removeEventListener("submit", onSubmit);
+      root.removeEventListener("toggle", onDetailsToggle, true);
     }
     mounts.set(root, dispose);
     signal?.addEventListener("abort", dispose, { once: true });
@@ -152,11 +158,13 @@ window.DevCoordinatorAgentHub = (() => {
         state.secret = "";
         state.overlap = "";
         state.rotateConfirm = false;
+        state.keyDialog = false;
       }
       state.step = step;
       updateRoute();
       render();
       root.querySelector("#hub-panel-title")?.focus();
+      void refresh();
     }
     function updateRoute() {
       const query = new URLSearchParams({
@@ -202,7 +210,7 @@ window.DevCoordinatorAgentHub = (() => {
         <div class="hub-panel" aria-busy="${state.loading || state.busy}">
 <div data-hub-feedback>${state.error ? `<div class="hub-error" role="alert">${escape(state.error)} ${button("refresh", "refresh")}</div>` : ""}${state.notice ? `<p class="hub-notice" role="status">${escape(state.notice)}</p>` : ""}</div>
         ${state.step === "key" ? keyPanel() : state.step === "connect" ? connectPanel() : roomsPanel()}
-        ${state.preview ? previewPanel() : ""}</div>
+        ${state.preview ? previewPanel() : ""}${state.keyDialog ? keyDialogPanel() : ""}</div>
 </div>
 </section>`;
       const keyInput = root.querySelector("#hub-key");
@@ -212,7 +220,7 @@ window.DevCoordinatorAgentHub = (() => {
       if (state.busy)
         root
           .querySelectorAll(
-            '[data-hub-action]:not([data-hub-action="dismiss-key"]):not([data-hub-action="close-preview"]), [data-hub-step], select, [type="submit"]',
+            '[data-hub-action]:not([data-hub-action="dismiss-key"]):not([data-hub-action="cancel-rotate"]):not([data-hub-action="close-preview"]), [data-hub-step], select, [type="submit"]',
           )
           .forEach((control) => {
             control.disabled = true;
@@ -239,6 +247,26 @@ window.DevCoordinatorAgentHub = (() => {
           restorePreviewFocus();
         });
       }
+      const keyDialog = root.querySelector(".hub-key-dialog");
+      if (keyDialog) {
+        keyDialog.showModal();
+        keyDialog.addEventListener("cancel", (event) => {
+          event.preventDefault();
+          dismissKeyDialog();
+        });
+        const target =
+          restored &&
+          keyDialog.contains(restored) &&
+          !restored.disabled &&
+          !(state.secret && restored.id === "hub-key-dialog-title")
+            ? restored
+            : root.querySelector(
+                state.secret ? "#hub-key" : "#hub-key-dialog-title",
+              );
+        target?.focus({ preventScroll: true });
+      }
+      if (scroll.y !== window.scrollY || scroll.x !== window.scrollX)
+        window.scrollTo(scroll.x, scroll.y);
       if (
         state.preview?.kind === "pdf" &&
         !root.querySelector("[data-hub-pdf] canvas")
@@ -248,34 +276,56 @@ window.DevCoordinatorAgentHub = (() => {
 
     function keyPanel() {
       const settings = state.settings;
-      return `<div class="hub-private">${icon("lock")}<span>${h("privateStatus")} <strong>${settings ? h("active") : h(state.loading ? "loading" : "unavailable")}</strong>
-</span>
-</div>
+      return `<div class="hub-private">${icon("lock")}<span>${h("privateStatus")} <strong>${settings ? h("active") : h(state.loading ? "loading" : "unavailable")}</strong></span></div>
         <h2 id="hub-panel-title" tabindex="-1">${h("keyTitle")}</h2>
-<p class="hub-lead">${h("keyIntro")}</p>
+        <p class="hub-lead">${h("keyIntro")}</p>
         ${
-          state.secret
-            ? `<section class="hub-secret" data-hub-secret>
-<h3>${h("keyReveal")}</h3>
-<label for="hub-key">${h("keyLabel")}</label>
-<input id="hub-key" data-hub-key-value readonly autocomplete="off" spellcheck="false" type="text" data-private-value>
-<p>${h("keyOnce")}</p>
-<div class="hub-actions">${button("copy-key", "copyKey")}${button("dismiss-key", "dismissKey")}</div>${state.overlap ? `<p>${h("keyOverlap", { date: date(state.overlap) })}</p>` : ""}</section>`
-            : administrator
-              ? `<button type="button" class="hub-button hub-primary hub-key-button" data-hub-action="generate-key" ${!settings || state.loading ? "disabled" : ""}>${icon("lock")}${h(settings?.current_key_created_at ? "rotateKey" : "generateKey")}</button>
-${rotationConfirmation()}<p class="hub-key-note">${icon("info-circle")}${h("keyOnce")}</p>${settings?.current_key_created_at ? `<p class="hub-muted">${h("keyCreated", { date: date(settings.current_key_created_at) })}</p>` : ""}`
-              : `<p class="hub-note">${h("keyAdmin")}</p>`
+          administrator
+            ? `<button type="button" class="hub-button hub-primary hub-key-button" data-hub-action="generate-key" ${!settings || state.loading ? "disabled" : ""}>${icon("lock")}${h(settings?.current_key_created_at ? "rotateKey" : "generateKey")}</button>
+        <p class="hub-key-note">${icon("info-circle")}${h("keyOnce")}</p>
+        ${settings?.current_key_created_at ? `<p class="hub-muted">${h("keyCreated", { date: date(settings.current_key_created_at) })}</p>` : ""}`
+            : `<p class="hub-note">${h("keyAdmin")}</p>`
         }
-        <p class="hub-local-note">${h("keyLocal")} <button type="button" class="hub-link" data-hub-step="connect">${h("continue")}</button>
-</p>
+        <p class="hub-local-note">${h("keyLocal")} <button type="button" class="hub-link" data-hub-step="connect">${h("continue")}</button></p>
         <button type="button" class="hub-link hub-public-link" data-hub-action="public-settings" aria-expanded="${state.publicOpen}">${icon("world")}${h("publicSettings")}</button>
         ${state.publicOpen ? publicPanel() : ""}`;
     }
 
-    function rotationConfirmation() {
-      return state.rotateConfirm
-        ? `<section class="hub-confirm" role="group" aria-label="${h("rotateKey")}"><p>${h("rotateConfirm")}</p><div class="hub-actions">${button("confirm-rotate", "rotateKey")}${button("cancel-rotate", "cancel")}</div></section>`
-        : "";
+    function keyDialogPanel() {
+      const revealed = Boolean(state.secret);
+      const title = revealed
+        ? "keyReveal"
+        : state.rotateConfirm
+          ? "rotateKey"
+          : "generateKey";
+      return `<dialog class="hub-key-dialog" aria-labelledby="hub-key-dialog-title" aria-describedby="hub-key-dialog-description">
+        <section class="${revealed ? "hub-secret" : "hub-confirm"}" ${revealed ? "data-hub-secret" : ""}>
+          <h3 id="hub-key-dialog-title" tabindex="-1">${h(title)}</h3>
+          <p id="hub-key-dialog-description">${h(revealed ? "keyOnce" : state.rotateConfirm ? "rotateConfirm" : "busy")}</p>
+          ${
+            revealed
+              ? `<label for="hub-key">${h("keyLabel")}</label>
+            <input id="hub-key" data-hub-key-value readonly autocomplete="off" spellcheck="false" type="text" data-private-value>
+            ${state.overlap ? `<p>${h("keyOverlap", { date: date(state.overlap) })}</p>` : ""}
+            <div class="hub-actions">${button("copy-key", "copyKey")}${button("dismiss-key", "dismissKey")}</div>`
+              : `<div class="hub-actions">${state.rotateConfirm ? button("confirm-rotate", "rotateKey") : ""}${button("cancel-rotate", "cancel")}</div>`
+          }
+          ${state.error ? `<p class="hub-error" role="alert">${escape(state.error)}</p>` : ""}
+          ${state.notice ? `<p role="status">${escape(state.notice)}</p>` : ""}
+        </section>
+      </dialog>`;
+    }
+
+    function dismissKeyDialog() {
+      state.secret = "";
+      state.overlap = "";
+      state.rotateConfirm = false;
+      state.keyDialog = false;
+      ++state.keyRequest;
+      render();
+      root
+        .querySelector('[data-hub-action="generate-key"]')
+        ?.focus({ preventScroll: true });
     }
 
     function publicPanel() {
@@ -549,20 +599,45 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
       state.loading = true;
       state.error = "";
       render();
+      const collectionsVisible =
+        state.step === "rooms" || state.step === "delivery";
       const results = await Promise.allSettled([
         ...(administrator
           ? [
               request("settings.get").then((value) => {
                 if (version === state.version) state.settings = value;
               }),
-              request("activity").then((value) => {
-                if (version === state.version) state.activity = value;
-              }),
+              ...(state.step === "delivery"
+                ? [
+                    request("activity").then((value) => {
+                      if (version === state.version) state.activity = value;
+                    }),
+                  ]
+                : []),
             ]
           : []),
-        loadCollection("agents", false, version),
-        loadCollection("rooms", false, version),
-        loadCollection("deliveries", false, version),
+        ...(state.step !== "key"
+          ? [loadCollection("agents", false, version)]
+          : !administrator
+            ? [
+                request("console.directory", {
+                  space: state.space,
+                  limit: 1,
+                }).then((value) => {
+                  if (version === state.version)
+                    state.settings = {
+                      public_enabled: value.public_enabled,
+                      public_paused: value.public_paused,
+                    };
+                }),
+              ]
+            : []),
+        ...(collectionsVisible
+          ? [
+              loadCollection("rooms", false, version),
+              loadCollection("deliveries", false, version),
+            ]
+          : []),
       ]);
       if (!alive() || version !== state.version) return;
       state.loading = false;
@@ -570,6 +645,7 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
         state.error = t("readError");
       else state.updated = new Date().toISOString();
       if (
+        collectionsVisible &&
         state.roomId &&
         state.loaded.rooms &&
         !state.rooms.some((room) => room.room_id === state.roomId)
@@ -598,6 +674,15 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
     function onInput(event) {
       if (event.target.id === "hub-reply")
         state.drafts.set(draftKey(), event.target.value);
+    }
+    function onDetailsToggle(event) {
+      const details = event.target;
+      if (!details.matches?.(".hub-details") || !details.open) return;
+      const heading = details.querySelector("h3");
+      if (heading) {
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      }
     }
     function onChange(event) {
       if (event.target.id === "hub-client") {
@@ -674,9 +759,7 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
         return;
       }
       if (action === "dismiss-key") {
-        state.secret = "";
-        state.overlap = "";
-        navigate("connect");
+        dismissKeyDialog();
         return;
       }
       if (action === "copy-key") {
@@ -744,9 +827,7 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
       }
       if (!administrator) return;
       if (action === "cancel-rotate") {
-        state.rotateConfirm = false;
-        render();
-        root.querySelector('[data-hub-action="generate-key"]')?.focus();
+        dismissKeyDialog();
         return;
       }
       if (action === "generate-key" || action === "confirm-rotate") {
@@ -756,20 +837,23 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
           state.settings.current_key_created_at
         ) {
           state.rotateConfirm = true;
+          state.keyDialog = true;
           render();
-          root.querySelector('[data-hub-action="confirm-rotate"]')?.focus();
           return;
         }
         state.rotateConfirm = false;
+        state.keyDialog = true;
+        const keyRequest = ++state.keyRequest;
         const hadKey = Boolean(state.settings.current_key_created_at);
         void busy(async () => {
           const result = await request("key.rotate", {
             expected_revision: state.settings.revision,
           });
-          state.secret = result.bearer_key;
-          state.overlap = hadKey ? result.previous_key_expires_at : "";
+          if (keyRequest === state.keyRequest && state.keyDialog) {
+            state.secret = result.bearer_key;
+            state.overlap = hadKey ? result.previous_key_expires_at : "";
+          }
           await refresh();
-          root.querySelector("#hub-key")?.focus({ preventScroll: true });
         });
         return;
       }
@@ -1033,6 +1117,7 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
     root.addEventListener("change", onChange);
     root.addEventListener("input", onInput);
     root.addEventListener("submit", onSubmit);
+    root.addEventListener("toggle", onDetailsToggle, true);
     render();
     await refresh();
     // Refresh is explicit so an operator reading a long conversation keeps its
