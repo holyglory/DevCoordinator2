@@ -925,6 +925,12 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
     AgentHubConsoleDirectory => {
                 self.agent_hub.console_directory(params)
             };
+    AgentHubConsoleRooms => {
+                self.agent_hub.console_rooms(params)
+            };
+    AgentHubConsoleFile => {
+                self.agent_hub.console_file(params)
+            };
     AgentHubConsoleReceive => {
                 self.agent_hub.console_receive(params)
             };
@@ -2768,6 +2774,9 @@ mod tests {
 
     #[test]
     fn agent_hub_operations_cross_the_typed_dispatch_boundary() {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
         let plane = ControlPlane::with_adapters(
@@ -2850,6 +2859,7 @@ mod tests {
             )
             .expect("message receive");
         assert_eq!(received["deliveries"].as_array().unwrap().len(), 1);
+        assert!(received["deliveries"][0].get("receipt_counts").is_none());
         plane
             .execute(
                 "agent.hub.ack",
@@ -2860,6 +2870,404 @@ mod tests {
                 &local(),
             )
             .expect("message acknowledgement");
+        let monitored = plane
+            .execute(
+                "agent.hub.console.receive",
+                serde_json::json!({"space":"private","room_id":room["room_id"]}),
+                &local(),
+            )
+            .expect("Console receipt projection");
+        assert_eq!(monitored["deliveries"][0]["acknowledged"], true);
+        assert_eq!(
+            monitored["deliveries"][0]["receipt_counts"],
+            serde_json::json!({"recipients":1,"acknowledged":1})
+        );
+
+        // Exercise admitted Console access through ordinary authorization and
+        // dispatch, without an agent token or a global administrator grant.
+        let viewer = public("hub-viewer@example.test");
+        plane
+            .execute(
+                "user.invite",
+                serde_json::json!({"email":"hub-viewer@example.test"}),
+                &local(),
+            )
+            .unwrap();
+        plane
+            .execute(
+                "user.accept_invitation",
+                serde_json::json!({"email":"hub-viewer@example.test"}),
+                &viewer,
+            )
+            .unwrap();
+        for (operation, params) in [
+            ("agent.hub.settings.get", serde_json::json!({})),
+            (
+                "agent.hub.settings.set",
+                serde_json::json!({"expected_revision":0,"public_enabled":true,"public_paused":false}),
+            ),
+            (
+                "agent.hub.key.rotate",
+                serde_json::json!({"expected_revision":0}),
+            ),
+            (
+                "agent.hub.admin.agent.remove",
+                serde_json::json!({"agent_id":first["agent"]["agent_id"]}),
+            ),
+            (
+                "agent.hub.admin.room.remove",
+                serde_json::json!({"room_id":room["room_id"]}),
+            ),
+            (
+                "agent.hub.admin.message.remove",
+                serde_json::json!({"message_id":message["message_id"]}),
+            ),
+        ] {
+            assert_eq!(
+                plane.execute(operation, params, &viewer).unwrap_err().code,
+                ErrorCode::PermissionDenied,
+                "{operation}"
+            );
+        }
+        let private_directory = plane
+            .execute(
+                "agent.hub.console.directory",
+                serde_json::json!({"space":"private"}),
+                &viewer,
+            )
+            .unwrap();
+        assert_eq!(private_directory["agents"].as_array().unwrap().len(), 2);
+        assert_eq!(private_directory["public_paused"], false);
+        assert!(
+            plane
+                .execute(
+                    "agent.hub.directory",
+                    serde_json::json!({"space":"private"}),
+                    &local()
+                )
+                .unwrap()
+                .get("public_paused")
+                .is_none()
+        );
+        assert_eq!(
+            plane
+                .execute(
+                    "agent.hub.console.rooms",
+                    serde_json::json!({"space":"private"}),
+                    &public("uninvited@example.test")
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::PermissionDenied
+        );
+
+        let empty = plane
+            .execute(
+                "agent.hub.room.create",
+                serde_json::json!({"auth":auth(&first),"space":"private","name":"empty-room"}),
+                &local(),
+            )
+            .unwrap();
+        plane.execute("agent.hub.room.member.remove", serde_json::json!({"auth":auth(&first),"room_id":empty["room_id"],"agent_id":first["agent"]["agent_id"]}), &local()).unwrap();
+        // Historical room timestamps deliberately run opposite to opaque IDs.
+        plane
+            .database
+            .transaction(|db| {
+                let mut query =
+                    db.prepare("SELECT room_id FROM agent_hub_rooms ORDER BY room_id DESC")?;
+                let ids = query
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (index, id) in ids.iter().enumerate() {
+                    db.execute(
+                        "UPDATE agent_hub_rooms SET created_at=$1 WHERE room_id=$2",
+                        crate::database::params![format!("2020-01-01T00:00:{index:02}Z"), id],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let mut after = Value::Null;
+        let mut rooms = Vec::new();
+        loop {
+            let page = plane
+                .execute(
+                    "agent.hub.console.rooms",
+                    serde_json::json!({"space":"private","limit":1,"after":after}),
+                    &viewer,
+                )
+                .unwrap();
+            rooms.extend(page["rooms"].as_array().unwrap().iter().cloned());
+            after = page["next"].clone();
+            if after.is_null() {
+                break;
+            }
+            assert!(rooms.len() < 3);
+        }
+        assert_eq!(rooms.len(), 2);
+        assert_ne!(rooms[0]["room_id"], rooms[1]["room_id"]);
+        assert!(rooms[0]["room_id"].as_str().unwrap() > rooms[1]["room_id"].as_str().unwrap());
+        assert_eq!(
+            rooms
+                .iter()
+                .find(|entry| entry["room_id"] == empty["room_id"])
+                .unwrap()["member_count"],
+            0
+        );
+        assert!(
+            rooms
+                .iter()
+                .all(|entry| entry["space"] == "private" && entry.get("members").is_none())
+        );
+        let no_messages = plane
+            .execute(
+                "agent.hub.console.receive",
+                serde_json::json!({"space":"private","room_id":empty["room_id"]}),
+                &viewer,
+            )
+            .unwrap();
+        assert!(no_messages["deliveries"].as_array().unwrap().is_empty());
+        plane.execute("agent.hub.console.send", serde_json::json!({"space":"private","room_id":empty["room_id"],"body":"retained without recipients"}), &viewer).unwrap();
+        let zero = plane
+            .execute(
+                "agent.hub.console.receive",
+                serde_json::json!({"space":"private","room_id":empty["room_id"]}),
+                &viewer,
+            )
+            .unwrap();
+        assert_eq!(
+            zero["deliveries"][0]["receipt_counts"],
+            serde_json::json!({"recipients":0,"acknowledged":0})
+        );
+        assert_eq!(zero["deliveries"][0]["acknowledged"], false);
+
+        let human = plane.execute("agent.hub.console.send", serde_json::json!({"space":"private","room_id":room["room_id"],"body":"human reply"}), &viewer).unwrap();
+        let human_receipt = || {
+            let monitored = plane
+                .execute(
+                    "agent.hub.console.receive",
+                    serde_json::json!({"space":"private","room_id":room["room_id"]}),
+                    &viewer,
+                )
+                .unwrap();
+            monitored["deliveries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|delivery| delivery["message"]["message_id"] == human["message_id"])
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            human_receipt()["receipt_counts"],
+            serde_json::json!({"recipients":2,"acknowledged":0})
+        );
+        assert_eq!(human_receipt()["acknowledged"], false);
+        for (index, recipient) in [&first, &second].into_iter().enumerate() {
+            let inbox = plane
+                .execute(
+                    "agent.hub.receive",
+                    serde_json::json!({"auth":auth(recipient),"room_id":room["room_id"]}),
+                    &local(),
+                )
+                .unwrap();
+            let delivery = inbox["deliveries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|delivery| delivery["message"]["message_id"] == human["message_id"])
+                .unwrap();
+            assert_eq!(delivery["message"]["sender"]["display_name"], "Console");
+            plane.execute("agent.hub.ack", serde_json::json!({"auth":auth(recipient),"delivery_ids":[delivery["delivery_id"]]}), &local()).unwrap();
+            let receipt = human_receipt();
+            assert_eq!(
+                receipt["receipt_counts"],
+                serde_json::json!({"recipients":2,"acknowledged":index+1})
+            );
+            assert_eq!(receipt["acknowledged"], index == 1);
+        }
+
+        let bytes = b"dispatch attachment\n";
+        let digest = sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let upload = plane.execute("agent.hub.upload.start", serde_json::json!({"auth":auth(&first),"request_key":"dispatch-upload","name":"dispatch.txt","content_type":"text/plain","byte_size":bytes.len(),"sha256":digest}), &local()).unwrap();
+        assert_eq!(plane.execute("agent.hub.console.file", serde_json::json!({"space":"private","room_id":room["room_id"],"file_id":upload["upload_id"]}), &viewer).unwrap_err().code, ErrorCode::HubNotFound);
+        plane.execute("agent.hub.upload.chunk", serde_json::json!({"auth":auth(&first),"upload_id":upload["upload_id"],"offset":0,"data_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}), &local()).unwrap();
+        let attached = plane.execute("agent.hub.send", serde_json::json!({"auth":auth(&first),"room_id":room["room_id"],"body":"file attached","attachments":[upload["upload_id"]]}), &local()).unwrap();
+        let file_id = &attached["attachments"][0]["attachment_id"];
+        let file = plane
+            .execute(
+                "agent.hub.console.file",
+                serde_json::json!({"space":"private","room_id":room["room_id"],"file_id":file_id}),
+                &viewer,
+            )
+            .unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(file["data_base64"].as_str().unwrap())
+                .unwrap(),
+            bytes
+        );
+        let tail = plane.execute("agent.hub.console.file", serde_json::json!({"space":"private","room_id":room["room_id"],"file_id":file_id,"offset":4}), &viewer).unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(tail["data_base64"].as_str().unwrap())
+                .unwrap(),
+            &bytes[4..]
+        );
+        assert!(tail["next_offset"].is_null());
+        assert_eq!(plane.execute("agent.hub.console.file", serde_json::json!({"space":"private","room_id":room["room_id"],"file_id":file_id,"offset":999}), &viewer).unwrap_err().code, ErrorCode::HubAttachmentInvalid);
+
+        plane.execute("agent.hub.settings.set", serde_json::json!({"expected_revision":0,"public_enabled":true,"public_paused":false}), &local()).unwrap();
+        let public_agent = plane
+            .execute(
+                "agent.hub.register",
+                serde_json::json!({"space":"public","display_name":"public-agent"}),
+                &local(),
+            )
+            .unwrap();
+        let public_room = plane.execute("agent.hub.room.create", serde_json::json!({"auth":auth(&public_agent),"space":"public","name":"public-room"}), &local()).unwrap();
+        let public_message = plane.execute("agent.hub.console.send", serde_json::json!({"space":"public","room_id":public_room["room_id"],"body":"public human reply"}), &viewer).unwrap();
+        assert_eq!(public_message["sender"]["space"], "public");
+        let public_upload = plane.execute("agent.hub.upload.start", serde_json::json!({"auth":auth(&public_agent),"request_key":"public-upload","name":"public.txt","content_type":"text/plain","byte_size":bytes.len(),"sha256":digest}), &local()).unwrap();
+        plane.execute("agent.hub.upload.chunk", serde_json::json!({"auth":auth(&public_agent),"upload_id":public_upload["upload_id"],"offset":0,"data_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}), &local()).unwrap();
+        let public_attachment = plane.execute("agent.hub.send", serde_json::json!({"auth":auth(&public_agent),"room_id":public_room["room_id"],"body":"public attachment","attachments":[public_upload["upload_id"]]}), &local()).unwrap();
+        for (operation, params) in [
+            (
+                "agent.hub.console.receive",
+                serde_json::json!({"space":"public","room_id":room["room_id"]}),
+            ),
+            (
+                "agent.hub.console.receive",
+                serde_json::json!({"space":"public","after":message["message_id"]}),
+            ),
+            (
+                "agent.hub.console.receive",
+                serde_json::json!({"space":"private","room_id":empty["room_id"],"after":message["message_id"]}),
+            ),
+            (
+                "agent.hub.console.rooms",
+                serde_json::json!({"space":"public","after":room["room_id"]}),
+            ),
+            (
+                "agent.hub.console.file",
+                serde_json::json!({"space":"public","room_id":room["room_id"],"file_id":file_id}),
+            ),
+            (
+                "agent.hub.console.file",
+                serde_json::json!({"space":"private","room_id":empty["room_id"],"file_id":file_id}),
+            ),
+            (
+                "agent.hub.console.send",
+                serde_json::json!({"space":"public","room_id":room["room_id"],"body":"wrong space"}),
+            ),
+            (
+                "agent.hub.console.send",
+                serde_json::json!({"space":"private","room_id":public_room["room_id"],"body":"wrong space"}),
+            ),
+        ] {
+            assert_eq!(
+                plane.execute(operation, params, &viewer).unwrap_err().code,
+                ErrorCode::HubNotFound,
+                "{operation}"
+            );
+        }
+        let public_rooms = plane
+            .execute(
+                "agent.hub.console.rooms",
+                serde_json::json!({"space":"public"}),
+                &viewer,
+            )
+            .unwrap();
+        assert_eq!(public_rooms["rooms"].as_array().unwrap().len(), 1);
+        assert_eq!(public_rooms["rooms"][0]["room_id"], public_room["room_id"]);
+        for (revision, enabled, paused) in [(1, true, true), (2, false, false)] {
+            plane.execute("agent.hub.settings.set", serde_json::json!({"expected_revision":revision,"public_enabled":enabled,"public_paused":paused}), &local()).unwrap();
+            let directory = plane
+                .execute(
+                    "agent.hub.console.directory",
+                    serde_json::json!({"space":"public"}),
+                    &viewer,
+                )
+                .unwrap();
+            assert_eq!(directory["public_enabled"], enabled);
+            assert_eq!(directory["public_paused"], paused);
+            assert_eq!(directory["agents"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                plane
+                    .execute(
+                        "agent.hub.console.rooms",
+                        serde_json::json!({"space":"public"}),
+                        &viewer
+                    )
+                    .unwrap()["rooms"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let retained = plane
+                .execute(
+                    "agent.hub.console.receive",
+                    serde_json::json!({"space":"public","room_id":public_room["room_id"]}),
+                    &viewer,
+                )
+                .unwrap();
+            assert_eq!(
+                retained["deliveries"][0]["message"]["message_id"],
+                public_message["message_id"]
+            );
+            let retained_file = plane.execute("agent.hub.console.file", serde_json::json!({"space":"public","room_id":public_room["room_id"],"file_id":public_attachment["attachments"][0]["attachment_id"]}), &viewer).unwrap();
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(retained_file["data_base64"].as_str().unwrap())
+                    .unwrap(),
+                bytes
+            );
+            assert_eq!(plane.execute("agent.hub.console.send", serde_json::json!({"space":"public","room_id":public_room["room_id"],"body":"blocked"}), &viewer).unwrap_err().code, ErrorCode::HubDisabled);
+            assert_eq!(
+                plane
+                    .execute(
+                        "agent.hub.directory",
+                        serde_json::json!({"space":"public"}),
+                        &local()
+                    )
+                    .unwrap_err()
+                    .code,
+                ErrorCode::HubDisabled
+            );
+            assert_eq!(
+                plane
+                    .execute(
+                        "agent.hub.remote",
+                        serde_json::json!({"action":{"kind":"directory","space":"public"}}),
+                        &public("remote@example.test")
+                    )
+                    .unwrap_err()
+                    .code,
+                ErrorCode::HubDisabled
+            );
+        }
+        for result in [&private_directory, &file, &human_receipt()] {
+            let encoded = serde_json::to_string(result).unwrap();
+            for prohibited in [
+                "token",
+                "callback_url",
+                "callback_secret",
+                "bearer_key",
+                "token_hash",
+                "uid:",
+                "@example.test",
+                "/home/",
+            ] {
+                assert!(
+                    !encoded.contains(prohibited),
+                    "ordinary Console result contains {prohibited}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -65,6 +65,7 @@
   "destination_tests": "Testi",
   "destination_health": "Sistēmas stāvoklis",
   "destination_bugs": "Kļūdas",
+  "destination_agent_hub": "Aģentu centrs",
   "destination_admin": "Administrēšana",
   "destination_shared_glossary": "Koplietojama terminu vārdnīca",
   "expired": "Derīgums beidzies",

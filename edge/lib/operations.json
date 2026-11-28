@@ -70,7 +70,27 @@
       },
       "responseTimeoutSeconds": 10
     },
+    "agent.hub.console.file": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
     "agent.hub.console.receive": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.console.rooms": {
       "passiveWait": false,
       "policy": {
         "effect": "read",

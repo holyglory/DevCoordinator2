@@ -115,6 +115,8 @@ pub struct DirectoryResult {
     pub agents: Vec<AgentProfile>,
     pub next: Option<String>,
     pub public_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_paused: Option<bool>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -215,6 +217,15 @@ pub struct Delivery {
     pub delivery_id: String,
     pub message: Message,
     pub acknowledged: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_counts: Option<ReceiptCounts>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptCounts {
+    pub recipients: u32,
+    pub acknowledged: u32,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -343,6 +354,43 @@ pub struct ConsoleDirectory {
     pub after: Option<String>,
     #[serde(default = "page_size")]
     pub limit: u16,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsoleRooms {
+    pub space: Space,
+    #[serde(default)]
+    pub after: Option<String>,
+    #[serde(default = "page_size")]
+    pub limit: u16,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsoleRoom {
+    pub room_id: String,
+    pub space: Space,
+    pub name: String,
+    pub created_at: String,
+    pub member_count: u32,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsoleRoomsResult {
+    pub rooms: Vec<ConsoleRoom>,
+    pub next: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsoleFile {
+    pub space: Space,
+    pub room_id: String,
+    pub file_id: String,
+    #[serde(default)]
+    pub offset: u64,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

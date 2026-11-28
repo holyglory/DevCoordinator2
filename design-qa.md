@@ -1241,3 +1241,27 @@ Current captures, their manifest, and the Product Design comparison are in `/mnt
 Fixture comparison: passed. Overall handoff: incomplete. These screenshots do not prove real collector latency, shared-live measurements or full assistive-technology behavior. Shared Console comparison, serving-source verification, exact normal-release qualification and a qualified delivery receipt remain required; earlier source48 acceptance does not cover this UI.
 
 final result: incomplete
+
+## Agent hub Guided Handoff — 2026-11-28
+
+The Console candidate lets an administrator create a private hub key, connect an agent, open a room and watch each recipient acknowledge a message. The selected reference is Guided Handoff, option 1, sketch `s7c9541110c4d4e13` in continuation revision 2 of `console-agent-hub`. Selection decision `n649ce019626787d8` retains the design history.
+
+1. **Open the shared Agent hub.** The shared Console returned its Projects page. Its navigation has no Agent hub entry, and its installed API does not recognize the room-list operation. A masked header crop and the read-only observation are retained with the audit. The four-step journey requires a new shared installation.
+2. **Create a key on the isolated first-run screen.** The comparison uses one light-theme English window and the 1487 × 1058 raster dimensions of the selected image. The sketch describes the intended viewport as 1440 × 1024. The step rail, selected first step, single blue generation action and one-time warning are all visible. The existing Console navigation and the local-agent link reflect the real entry point and the ability to connect locally without a key.
+3. **Connect an agent, select a room and watch delivery.** The isolated PostgreSQL-backed journey exercised local and remote registration, key rotation, public access controls, room selection, human replies, attachment handling and the receipt counts stored for each message. The complete run passed 28 checks. Six separate formal reports and manual receipts cover 268 screen states and viewport samples in light and dark themes. The 30 served UI assets match source commit `b6a3a42f77fe033a88144aae171753f64ea3a20c`.
+
+The first manual pass found that the key reveal masked its instructions, an expanded command began below the viewport, and phone users had to scroll through setup guidance before seeing rooms or delivery status. The revised screen masks the key field alone, opens commands in a focused dialog and puts the selected room and its actual acknowledgment count or empty state first on phones. Reviewers inspected all 268 new viewport/full-page pairs. No blocking manual finding remains on this candidate.
+
+The focused first-run comparison found two P3 polish items. The generation button is about 288 × 57 pixels and uses a lock icon. The reference uses a key icon and a roughly 365 × 62 pixel button. The supporting type and spacing are also denser in the candidate. Both captures show one readable primary action. The other steps, phone layouts and dark theme have behavioral and visual evidence from the candidate. The selected sketch depicts the light desktop first-run state only.
+
+The linked Coordinator UI outcome `p7ccc884f14da8f25` records the private evidence location. Audit `agent-hub-console-20261128/visual-review/final/design-comparison` retains the selected source, isolated render, full and focused comparisons, diagnostic shared header and machine-readable result. The companion `frozen-receipts/manual-and-user-interface-evidence.json` index binds all six receipts and 536 screenshot hashes. The release and recovery work remain attached to `pe16a9a20414f613e` and `pddba58a3f69121a3`.
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Selected source, `02-selected-source.png` | `2fe49c24e5407b082fbd5c766f4e4a1e6e56100afb7ecb72ee669ce4d2d46b06` |
+| Isolated render, `03-frozen-first-run-light.png` | `bf07ff4edc3b0f5540ffce861db11337d348317ea6e65427b31f246bda8f8de0` |
+| Full comparison, `04-paired-full.png` | `c356f6426c94d58abc1ad0672d4ceda4b8e0e9c0f6e61dc9e09ac520b0117c20` |
+| Focused comparison, `05-paired-focused.png` | `10a82d90c17c3c015cbd4dbaf2f3bf2c88c5022857c73220dc4c8ddb18a5102b` |
+| Shared-surface audit receipt, `audit-receipt.json` | `2c23bc8e8659457f780d6a405e3eb04d78e6f78cb0ac4cfc28073e1a85e67247` |
+
+**final result: blocked**. The shared server needs a verified recovery path before it can serve the candidate. Once it does, repeat the rendered comparison on that server, verify the installed source and obtain the qualified delivery receipt.

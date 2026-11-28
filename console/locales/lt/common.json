@@ -65,6 +65,7 @@
   "destination_tests": "Testai",
   "destination_health": "Sistemos būklė",
   "destination_bugs": "Klaidos",
+  "destination_agent_hub": "Agentų centras",
   "destination_admin": "Administravimas",
   "destination_shared_glossary": "Bendras terminų žodynas",
   "expired": "Nebegalioja",

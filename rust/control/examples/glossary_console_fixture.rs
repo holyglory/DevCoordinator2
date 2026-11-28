@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("an unused external fixture directory is required")?,
     );
     let tickets = std::env::args().nth(2).as_deref() == Some("tickets");
+    let agent_hub = std::env::args().nth(2).as_deref() == Some("agent-hub");
     let projects_native = std::env::args().nth(2).as_deref() == Some("projects-native");
     let projects = projects_native || std::env::args().nth(2).as_deref() == Some("projects");
     let _native_guard = if projects_native {
@@ -31,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let sketches = std::env::args().nth(2).as_deref() == Some("sketches");
     if !projects_native
-        && (!(tickets || sketches) || !root.join("glossary-fixture.marker").is_file())
+        && (!(tickets || sketches || agent_hub) || !root.join("glossary-fixture.marker").is_file())
     {
         std::fs::create_dir(&root)?;
     }
@@ -115,10 +116,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(|_: &RouteAccessSection| Ok(())),
         Arc::new(HostClock),
     )?;
-    let plane = if projects_native {
+    let mut plane = if projects_native {
         let backend = Arc::new(
             devcoordinator2_control::storage::native::HostBackend::with_docker(
-                config,
+                config.clone(),
                 database.clone(),
                 Arc::new(projects_fixture::NoHostDocker),
             ),
@@ -181,6 +182,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             work: None,
             identity: request.client.identity,
         };
+        if agent_hub && request.operation == "fixture.hub.reopen" {
+            // Reconnect the real authority pool while retaining the fixture
+            // cluster owner. A process restart would intentionally destroy
+            // this RAII-owned PostgreSQL cluster rather than test durability.
+            let reopened =
+                Database::connect(&database.fixture().ok_or("fixture owner required")?.config)?;
+            plane = ControlPlane::with_adapters(
+                config.clone(),
+                reopened,
+                Arc::new(|_: &RouteAccessSection| Ok(())),
+                Arc::new(HostClock),
+            )?;
+            writeln!(
+                output,
+                "{}",
+                json!({"protocol":3,"id":request.id,"ok":true,"data":{}})
+            )?;
+            output.flush()?;
+            continue;
+        }
+        // A fixture-owned clock adjustment keeps the browser matrix independent
+        // of the 90-second lease. It is never compiled into a shipped binary.
+        if agent_hub && request.operation == "fixture.hub.lease" {
+            let id = request.params["agent_id"]
+                .as_str()
+                .ok_or("agent_id required")?
+                .to_owned();
+            let expired = request.params["expired"].as_bool().unwrap_or(false);
+            database.transaction(move |c| {
+                c.execute("UPDATE agent_hub_agents SET lease_expires_at=$1,state='active' WHERE agent_id=$2",devcoordinator2_control::database::params![if expired { "1970-01-01T00:00:00Z" } else { "2099-01-01T00:00:00Z" },id])?;
+                Ok(())
+            })?;
+            writeln!(
+                output,
+                "{}",
+                json!({"protocol":3,"id":request.id,"ok":true,"data":{}})
+            )?;
+            output.flush()?;
+            continue;
+        }
         if projects && request.operation == "fixture.projects.context" {
             writeln!(
                 output,

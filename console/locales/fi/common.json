@@ -65,6 +65,7 @@
   "destination_tests": "Testit",
   "destination_health": "Tila",
   "destination_bugs": "Virheet",
+  "destination_agent_hub": "Agenttikeskus",
   "destination_admin": "Hallinta",
   "destination_shared_glossary": "Jaettu sanasto",
   "expired": "Vanhentunut",

@@ -65,6 +65,7 @@
   "destination_tests": "Tests",
   "destination_health": "Systeemstatus",
   "destination_bugs": "Fouten",
+  "destination_agent_hub": "Agentencentrum",
   "destination_admin": "Beheer",
   "destination_shared_glossary": "Gedeelde woordenlijst",
   "expired": "Verlopen",

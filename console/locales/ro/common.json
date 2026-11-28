@@ -65,6 +65,7 @@
   "destination_tests": "teste",
   "destination_health": "stare",
   "destination_bugs": "erori",
+  "destination_agent_hub": "Centrul agenților",
   "destination_admin": "administrare",
   "destination_shared_glossary": "partajat glossary",
   "expired": "expirat",

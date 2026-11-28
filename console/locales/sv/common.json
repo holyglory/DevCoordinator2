@@ -65,6 +65,7 @@
   "destination_tests": "Tester",
   "destination_health": "Systemstatus",
   "destination_bugs": "Fel",
+  "destination_agent_hub": "Agentcenter",
   "destination_admin": "Administration",
   "destination_shared_glossary": "Gemensam ordlista",
   "expired": "Utgången",

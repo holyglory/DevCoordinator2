@@ -17,6 +17,7 @@ import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {constants} from 'node:fs';
 import {verifyLiveProjects} from './verify-live-projects.mjs';
+import {verifyLiveAgentHub} from './verify-live-agent-hub.mjs';
 
 const mode=process.env.CONSOLE_VERIFY_MODE||'tickets';
 // Complete formal reports can include the 60-cell journey evidence and are
@@ -188,7 +189,7 @@ async function observeNative({root,out,source,base,request,check,target,expected
 }
 
 async function main(){
-if(!['tickets','postgres-v3','projects'].includes(mode))fail('mode');
+if(!['tickets','postgres-v3','projects','agent-hub'].includes(mode))fail('mode');
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const base=new URL(process.env.CONSOLE_VERIFY_BASE_URL);
@@ -208,9 +209,11 @@ const checks=[];const check=(name,pass)=>{checks.push({name,passed:!!pass});if(!
 try{
 if(mode==='postgres-v3'){
   await verifyV3({root,out,source,base,request,check});
-}else if(mode==='projects'){
-  await verifyLiveProjects({root,out,base,request,check,checks});
-  await fs.writeFile(path.join(out,'delivery.json'),JSON.stringify(await observeNative({root,out,source,base,request,check,target:'project-explorer',expectedCommit:process.env.CONSOLE_VERIFY_SOURCE_COMMIT})),{mode:0o600,flag:'wx'});
+}else if(mode==='projects'||mode==='agent-hub'){
+  const verifyJourney=mode==='projects'?verifyLiveProjects:verifyLiveAgentHub;
+  const target=mode==='projects'?'project-explorer':'agent-hub-console';
+  await verifyJourney({root,out,base,request,check,checks});
+  await fs.writeFile(path.join(out,'delivery.json'),JSON.stringify(await observeNative({root,out,source,base,request,check,target,expectedCommit:process.env.CONSOLE_VERIFY_SOURCE_COMMIT})),{mode:0o600,flag:'wx'});
   if(!process.env.CONSOLE_VERIFY_COMPLETION)throw new Error('A reviewed capability inventory is required');
   await fs.copyFile(process.env.CONSOLE_VERIFY_COMPLETION,path.join(out,'completion.json'));
 }else{

@@ -65,6 +65,7 @@
   "destination_tests": "Testler",
   "destination_health": "Durum",
   "destination_bugs": "Hatalar",
+  "destination_agent_hub": "Ajan merkezi",
   "destination_admin": "Yönetim",
   "destination_shared_glossary": "Paylaşılan sözlük",
   "expired": "Süresi doldu",

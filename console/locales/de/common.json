@@ -65,6 +65,7 @@
   "destination_tests": "Tests",
   "destination_health": "Systemzustand",
   "destination_bugs": "Fehler",
+  "destination_agent_hub": "Agentenzentrale",
   "destination_admin": "Verwaltung",
   "destination_shared_glossary": "Gemeinsames Glossar",
   "expired": "Abgelaufen",

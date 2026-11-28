@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="/workspace.css?v=sketch-annotation-20260923">
 <link rel="stylesheet" href="/i18n.css">
 <link rel="stylesheet" href="/tickets.css">
+<link rel="stylesheet" href="/agent-hub.css">
 <link rel="stylesheet" href="/sketches.css">
 <link rel="stylesheet" href="/storage.css">
 <link rel="stylesheet" href="/project-explorer.css">
@@ -23,13 +24,14 @@
 <body>
 <header class="top">
   <a class="brand" href="#/projects">DevCoordinator2</a>
-  <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Open navigation" aria-controls="nav" aria-expanded="false" data-i18n-attrs='{"aria-label":"shell.open_navigation_0ed77f"}'><span class="ti ti-menu-2" aria-hidden="true"></span></button>
+  <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Open navigation" aria-controls="nav" aria-expanded="false" disabled data-i18n-attrs='{"aria-label":"shell.open_navigation_0ed77f"}'><span class="ti ti-menu-2" aria-hidden="true"></span></button>
   <nav id="nav" aria-label="Primary" data-i18n-attrs='{"aria-label":"shell.primary_efe10c"}'>
     <a href="#/projects" data-view="projects"><span data-i18n="common.projects_04e2a9">Projects</span></a>
     <a href="#/health" data-view="health"><span data-i18n="shell.health_558984">Health</span></a>
     <a href="#/storage" data-view="storage" id="nav-storage" hidden><span data-i18n="shell.destination_storage">Storage</span></a>
     <a href="#/bugs" data-view="bugs"><span data-i18n="shell.bugs_ff7c54">Bugs</span></a>
     <a href="#/requests" data-view="requests">Feature requests</a>
+    <a href="#/agent-hub" data-view="agent-hub"><span data-i18n="common.destination_agent_hub">Agent hub</span></a>
     <a href="#/glossary/shared" data-view="glossary"><span data-i18n="shell.shared_glossary_3551c4">Shared glossary</span></a>
     <a href="#/tests?settings=capacity" data-view="test-capacity" id="test-capacity-open"><span data-i18n="shell.test_capacity_408011">Test capacity</span></a>
     <a href="#/tests?settings=retention" data-view="test-retention" id="test-log-retention-open"><span data-i18n="shell.log_retention_46c385">Log retention</span></a>

@@ -93,6 +93,9 @@
         ],
         "projects": [
           "en/projects.json"
+        ],
+        "agent-hub": [
+          "en/agent-hub.json"
         ]
       }
     },
@@ -3039,6 +3042,10 @@
       "status": "source-only"
     },
     "projects": {
+      "sourceLocale": "en",
+      "status": "source-only"
+    },
+    "agent-hub": {
       "sourceLocale": "en",
       "status": "source-only"
     }
