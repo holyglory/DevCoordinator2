@@ -219,7 +219,14 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     const pdf=fixturePdf();
     const pdfUpload=await call('agent.hub.upload.start',{auth:auth(sender),request_key:'browser-fixture-pdf',name:'handoff.pdf',content_type:'application/pdf',byte_size:pdf.length,sha256:createHash('sha256').update(pdf).digest('hex')},null);
     await call('agent.hub.upload.chunk',{auth:auth(sender),upload_id:pdfUpload.upload_id,offset:0,data_base64:pdf.toString('base64')},null);
-    fileMessage=await call('agent.hub.send',{auth:auth(sender),room_id:room.room_id,body:'Please inspect the attached handoff notes.',attachments:[upload.upload_id,pdfUpload.upload_id]},null);
+    const png=Buffer.from(await page.evaluate(()=>{
+      const canvas=document.createElement('canvas');canvas.width=640;canvas.height=360;const context=canvas.getContext('2d');
+      context.fillStyle='#e8f2ff';context.fillRect(0,0,640,360);context.fillStyle='#234c79';context.fillRect(48,64,180,180);context.fillRect(412,64,180,180);context.fillRect(228,148,184,12);
+      context.font='24px sans-serif';context.fillText('Safe fixture diagram',48,310);return canvas.toDataURL('image/png').split(',')[1];
+    }),'base64');
+    const imageUpload=await call('agent.hub.upload.start',{auth:auth(sender),request_key:'browser-fixture-png',name:'handoff-diagram.png',content_type:'image/png',byte_size:png.length,sha256:createHash('sha256').update(png).digest('hex')},null);
+    await call('agent.hub.upload.chunk',{auth:auth(sender),upload_id:imageUpload.upload_id,offset:0,data_base64:png.toString('base64')},null);
+    fileMessage=await call('agent.hub.send',{auth:auth(sender),room_id:room.room_id,body:'Please inspect the attached handoff notes.',attachments:[upload.upload_id,pdfUpload.upload_id,imageUpload.upload_id]},null);
     ackedMessage=await call('agent.hub.send',{auth:auth(sender),room_id:room.room_id,body:'Acknowledged handoff fixture.',attachments:[]},null);
     const deliveries=await call('agent.hub.receive',{auth:auth(recipient),room_id:room.room_id},null);
     await call('agent.hub.ack',{auth:auth(recipient),delivery_ids:[deliveries.deliveries.find(row=>row.message.message_id===ackedMessage.message_id).delivery_id]},null);
@@ -317,6 +324,15 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     }
     assert.ok(await page.locator('.hub-preview canvas').evaluate(canvas=>canvas.width>0&&canvas.height>0));
     await page.locator(action('close-preview')).click();
+  });
+  await check('PNG preview decodes the real attachment and download preserves its SHA-256',async()=>{
+    const row=page.locator(`[data-hub-delivery="${fileMessage.message_id}"]`);
+    await row.locator(action('preview')).nth(2).click();
+    await page.waitForFunction(()=>{const image=document.querySelector('.hub-preview img');return image?.complete&&image.naturalWidth===640&&image.naturalHeight===360;});
+    await page.locator(action('close-preview')).click();
+    const downloadPromise=page.waitForEvent('download');await row.locator(action('download')).nth(2).click();const download=await downloadPromise;
+    assert.equal(download.suggestedFilename(),'handoff-diagram.png');
+    const bytes=await fs.readFile(await download.path());assert.equal(createHash('sha256').update(bytes).digest('hex'),fileMessage.attachments[2].sha256);await download.delete();
   });
   await check('Human reply reaches the real room, survives refresh and is acknowledged by a recipient',async()=>{
     await page.locator('#hub-reply').fill('Human approval from the browser fixture.');await page.locator(action('send')).click();
