@@ -34,6 +34,7 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
       const close=page.locator('dialog[open] [data-hub-action="close-preview"]');
       if(await close.count())await close.click().catch(()=>{});
       if(await page.locator('.hub-key-dialog[open]').count())await page.keyboard.press('Escape').catch(()=>{});
+      if(await page.locator('.hub-commands-dialog[open]').count())await page.keyboard.press('Escape').catch(()=>{});
     }
     await fs.writeFile(path.join(out,'agent-hub-progress.json'),JSON.stringify({completed:checks.length,last:checks.at(-1)},null,2));
   };
@@ -53,6 +54,43 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     return result;
   };
   const contents=async()=>page.locator('main').innerText();
+  const fullyVisible=async selector=>{
+    const result=await page.locator(selector).first().evaluate(element=>{
+      const rect=element.getBoundingClientRect();const dialog=element.closest('dialog');const limit=dialog?.getBoundingClientRect();
+      return {visible:rect.width>0&&rect.height>0&&rect.left>=0&&rect.top>=0&&rect.right<=innerWidth&&rect.bottom<=innerHeight&&(!limit||(rect.top>=limit.top&&rect.bottom<=limit.bottom))};
+    });
+    assert.ok(result.visible,`Fully visible continuation: ${selector}`);
+  };
+  const selectRoom=async id=>{
+    const select=page.locator('#hub-room-select');
+    if(await select.isVisible())await select.selectOption(id);else await page.locator(`[data-hub-room="${id}"]`).click();
+    await page.locator('.hub-panel[aria-busy="false"]').waitFor();
+  };
+  const privateKeyCapture=async(key,label)=>{
+    const guard=await page.evaluate(secret=>{
+      const elements=[...document.querySelectorAll('*')];if(elements.length>4000)throw new Error('Key guard DOM bound exceeded');
+      const field=document.querySelector('[data-hub-key-value]');
+      return {readonly:field?.readOnly===true,valueMatches:field?.value===secret,
+        otherValues:[...document.querySelectorAll('input,textarea,select')].filter(element=>element!==field&&String(element.value).includes(secret)).length,
+        attributeLeaks:elements.reduce((count,element)=>count+[...element.attributes].filter(attribute=>attribute.value.includes(secret)).length,0),
+        visibleTextLeak:document.body.innerText.includes(secret),
+        storedLeak:JSON.stringify({local:{...localStorage},session:{...sessionStorage},history:history.state,cookies:document.cookie,url:location.href}).includes(secret)};
+    },key);
+    assert.ok(guard.readonly&&guard.valueMatches&&guard.otherValues===0&&guard.attributeLeaks===0&&!guard.visibleTextLeak&&!guard.storedLeak,'The one-time key exists only in its readonly field');
+    const selectors=['#hub-key-dialog-title','#hub-key-dialog-description','[data-hub-action="copy-key"]','[data-hub-action="dismiss-key"]'];
+    for(const selector of selectors)await fullyVisible(selector);
+    const regions=await Promise.all(['[data-hub-key-value]',...selectors].map(async selector=>({selector,rect:await page.locator(selector).boundingBox()})));
+    const bytes=await page.screenshot({mask:[page.locator('[data-hub-key-value]'),page.locator('#who-email'),page.locator('#workspace-root')],maskColor:'#777777'});
+    const pixels=await page.evaluate(async({png,regions})=>{
+      const image=new Image();image.src=`data:image/png;base64,${png}`;await image.decode();const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;
+      const context=canvas.getContext('2d');context.drawImage(image,0,0);const scale=image.width/innerWidth;
+      return regions.map(({rect})=>{const data=context.getImageData(Math.floor((rect.x+rect.width*.25)*scale),Math.floor((rect.y+rect.height*.25)*scale),Math.max(1,Math.floor(rect.width*.5*scale)),Math.max(1,Math.floor(rect.height*.5*scale))).data;let masked=0;for(let i=0;i<data.length;i+=4)if(data[i]===119&&data[i+1]===119&&data[i+2]===119)masked++;return {samples:data.length/4,masked};});
+    },{png:bytes.toString('base64'),regions});
+    assert.equal(pixels[0].masked,pixels[0].samples,'Screenshot masks the entire key field');
+    assert.ok(pixels.slice(1).every(region=>region.masked<region.samples),'Screenshot retains title, instructions and both key actions');
+    await fs.writeFile(path.join(out,`key-${label}-redacted.png`),bytes);
+    await fs.writeFile(path.join(out,`key-${label}-guard.json`),JSON.stringify({guard,fieldRedacted:true,visibleControls:selectors.length},null,2));
+  };
   page.setDefaultTimeout(10000);
   page.on('dialog',dialog=>dialog.accept());
   let firstKey,secondKey,sender,recipient,expired,publicAgent,room,emptyRoom,publicRoom,zeroRoom,fileMessage,pendingMessage,ackedMessage,zeroMessage;
@@ -123,6 +161,7 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     firstKey=retainSecret(await page.locator('[data-hub-key-value]').evaluate(el=>el.value||el.textContent));
     assert.ok(await page.evaluate(position=>Math.abs(scrollY-position)<=8,scroll),'Initial phone reveal preserves document position');
     assert.equal(await page.evaluate(()=>document.activeElement?.id),'hub-key');
+    await privateKeyCapture(firstKey,'initial-phone');
     assert.ok(firstKey.length>=32,'A key was generated');
     await page.locator(action('copy-key')).click();
     await page.locator('.hub-notice').filter({hasText:/copied/i}).waitFor();
@@ -159,6 +198,7 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     await page.locator('[data-hub-key-value]').waitFor();
     assert.ok(await page.evaluate(position=>Math.abs(scrollY-position)<=8,scroll),'Reveal remains at the current document position');
     secondKey=retainSecret(await page.locator('[data-hub-key-value]').evaluate(el=>el.value||el.textContent));
+    await privateKeyCapture(secondKey,'rotated-phone');
     assert.ok(secondKey!==firstKey,'Rotation generates another key');
     assert.equal((await remote({kind:'directory',space:'private'},secondKey)).ok,true);
     assert.equal((await remote({kind:'directory',space:'private'},firstKey)).ok,true);
@@ -244,7 +284,7 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     assert.equal(await page.locator('[data-hub-room]').count(),3);
   });
   await check('Selecting an actual empty room keeps its no-message result truthful',async()=>{
-    await page.locator(`[data-hub-room="${emptyRoom.room_id}"]`).click();
+    await selectRoom(emptyRoom.room_id);
     await page.locator('.hub-conversation .hub-empty').filter({hasText:/no messages/i}).waitFor();
     assert.match(await contents(),/no messages|empty|no deliveries/i);
     assert.equal(await page.locator('[data-hub-delivery]').count(),0);
@@ -287,9 +327,38 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     await go('delivery',`&room=${room.room_id}`);
     await page.locator(`[data-hub-delivery="${ackedMessage.message_id}"]`).waitFor();
     assert.match(await page.locator(`[data-hub-delivery="${ackedMessage.message_id}"]`).innerText(),/acknowledged|confirmed/i);
-    assert.match(await page.locator(`[data-hub-delivery="${pendingMessage.message_id}"]`).innerText(),/0 of 1 recipients acknowledged/i);
+    assert.match(await page.locator(`[data-hub-delivery="${pendingMessage.message_id}"] [data-hub-receipt]`).innerText(),/Acknowledged:\s*0\s*\/\s*1/i);
     await go('delivery',`&room=${zeroRoom.room_id}`);
     assert.match(await contents(),/no recipients|stored.*only|stored without/i);
+  });
+  await check('Each command reference opens a fully visible first command and restores focus',async()=>{
+    for(const width of [390,1487]) {
+      await page.setViewportSize({width,height:width===390?664:1058});
+      for(const step of ['connect','rooms','delivery']) {
+        await go(step,step==='delivery'?`&room=${room.room_id}`:'');
+        await page.locator(action('open-commands')).scrollIntoViewIfNeeded();const scroll=await page.evaluate(()=>scrollY);
+        await page.locator(action('open-commands')).click();await page.locator('.hub-commands-dialog[open]').waitFor();
+        await fullyVisible('#hub-commands-title');await fullyVisible('.hub-commands-dialog .hub-instruction:first-child pre');
+        assert.ok(await page.evaluate(position=>Math.abs(scrollY-position)<=8,scroll),'Command dialog preserves document position');
+        assert.ok(await page.locator('.hub-commands-dialog').evaluate(element=>element.contains(document.activeElement)));
+        if(step==='connect')await page.keyboard.press('Escape');else await page.locator(action('close-commands')).click();
+        assert.equal(await page.evaluate(()=>document.activeElement?.id),`hub-open-commands-${step}`);
+      }
+    }
+    await page.setViewportSize({width:1440,height:900});await go('delivery',`&room=${room.room_id}`);
+  });
+  await check('Phone monitoring exposes actual room selection, receipts and empty results above the fold',async()=>{
+    await page.setViewportSize({width:390,height:664});
+    try {
+      await go('rooms');await fullyVisible('[data-hub-room]');
+      for(const selected of [room,zeroRoom,publicRoom]) {
+        await go('delivery',`&room=${selected.room_id}${selected===publicRoom?'&space=public':''}`);
+        await fullyVisible('.hub-room-heading h3');await fullyVisible('[data-hub-receipt]');
+        assert.equal(await page.locator('#hub-room-select').inputValue(),selected.room_id);
+      }
+      await go('delivery',`&room=${emptyRoom.room_id}`);await fullyVisible('.hub-conversation .hub-empty');
+      await selectRoom(room.room_id);await fullyVisible('[data-hub-receipt]');
+    } finally {await page.setViewportSize({width:1440,height:900});await go('delivery',`&room=${room.room_id}`);}
   });
   await check('Attachment preview treats text as text and download returns verified bytes',async()=>{
     await go('delivery',`&room=${room.room_id}`);

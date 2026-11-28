@@ -80,7 +80,7 @@
   "moreAgents": "Load more agents",
   "rooms": "Rooms",
   "noRooms": "No rooms in this space yet. Ask your registered agent to create one using the instructions above.",
-  "roomMembers": "{count} agent members",
+  "roomMembers": "Agent members: {count}",
   "moreRooms": "Load more rooms",
   "chooseRoom": "Select a room to read messages or send instructions.",
   "messages": "Messages",
@@ -91,7 +91,7 @@
   "send": "Send reply",
   "sent": "Your reply was saved in the room.",
   "consoleSender": "Console",
-  "receipts": "{acknowledged} of {recipients} recipients acknowledged",
+  "receipts": "Acknowledged: {acknowledged} / {recipients}",
   "noRecipients": "No agent recipients were recorded for this message.",
   "receiptsUnavailable": "Recipient acknowledgement counts are unavailable.",
   "receiptHelp": "Acknowledgements show that a recipient reported processing a message. They do not prove that the requested work is complete.",
@@ -125,5 +125,8 @@
   "replyReadFailed": "Your reply was submitted, but its saved message could not be read back. Refresh before sending it again.",
   "activityTitle": "Hub activity · all spaces",
   "activitySummary": "{active_agents} active agents · {rooms} rooms · {messages} messages",
-  "backlogSummary": "{deliveries_pending} recipient acknowledgements pending · {outbox_pending} callbacks queued"
+  "backlogSummary": "{deliveries_pending} recipient acknowledgements pending · {outbox_pending} callbacks queued",
+  "viewPublicSettings": "View public-space settings",
+  "closeCommands": "Close commands",
+  "chooseRoomLabel": "Select a room"
 }

@@ -58,7 +58,7 @@ export async function verifyLiveAgentHub({ root, out, base, request, check }) {
         const expected = await page.evaluate(counts => window.DevCoordinatorI18n.t(
           counts.recipients ? 'agent-hub.receipts' : 'agent-hub.noRecipients', counts), counts);
         check('A rendered message shows its recorded recipient acknowledgements',
-          (await item.locator('footer').innerText()).includes(expected));
+          (await item.locator('[data-hub-receipt]').innerText()).includes(expected));
       }
       check('The human reply composer is available in a real private room', await page.locator('#hub-reply').isVisible());
     } else {

@@ -73,6 +73,8 @@ window.DevCoordinatorAgentHub = (() => {
       keyDialog: false,
       keyRequest: 0,
       previewTrigger: null,
+      commandsOpen: false,
+      commandsTrigger: "",
     };
     const alive = () =>
       !disposed && !signal?.aborted && mounts.get(root) === dispose;
@@ -93,13 +95,13 @@ window.DevCoordinatorAgentHub = (() => {
       const secretInput = root.querySelector("#hub-key");
       if (secretInput) secretInput.value = "";
       root.querySelector(".hub-key-dialog")?.remove();
+      root.querySelector(".hub-commands-dialog")?.remove();
       for (const url of urls) URL.revokeObjectURL(url);
       urls.clear();
       root.removeEventListener("click", onClick);
       root.removeEventListener("change", onChange);
       root.removeEventListener("input", onInput);
       root.removeEventListener("submit", onSubmit);
-      root.removeEventListener("toggle", onDetailsToggle, true);
     }
     mounts.set(root, dispose);
     signal?.addEventListener("abort", dispose, { once: true });
@@ -161,6 +163,7 @@ window.DevCoordinatorAgentHub = (() => {
         state.keyDialog = false;
       }
       state.step = step;
+      state.commandsOpen = false;
       updateRoute();
       render();
       root.querySelector("#hub-panel-title")?.focus();
@@ -187,10 +190,11 @@ window.DevCoordinatorAgentHub = (() => {
           ? [active.selectionStart, active.selectionEnd]
           : null;
       const scroll = { x: window.scrollX, y: window.scrollY };
-      root.innerHTML = `<section class="hub-shell" data-agent-hub data-ui-region="agent-hub">
+      const operating = state.step === "rooms" || state.step === "delivery";
+      root.innerHTML = `<section class="hub-shell${operating ? " hub-operating" : ""}${currentRoom() ? " hub-has-room" : ""}" data-agent-hub data-ui-region="agent-hub">
         <header class="hub-heading">
-<h1>${h("title")}</h1>
-<p>${h("intro")}</p>
+<h1${operating ? ' id="hub-panel-title" tabindex="-1"' : ""}>${h(operating ? `${state.step}Title` : "title")}</h1>
+${operating ? "" : `<p>${h("intro")}</p>`}
 </header>
         <div class="hub-layout">
 <nav class="hub-steps" aria-label="${h("steps")}">${steps
@@ -210,7 +214,7 @@ window.DevCoordinatorAgentHub = (() => {
         <div class="hub-panel" aria-busy="${state.loading || state.busy}">
 <div data-hub-feedback>${state.error ? `<div class="hub-error" role="alert">${escape(state.error)} ${button("refresh", "refresh")}</div>` : ""}${state.notice ? `<p class="hub-notice" role="status">${escape(state.notice)}</p>` : ""}</div>
         ${state.step === "key" ? keyPanel() : state.step === "connect" ? connectPanel() : roomsPanel()}
-        ${state.preview ? previewPanel() : ""}${state.keyDialog ? keyDialogPanel() : ""}</div>
+        ${state.preview ? previewPanel() : ""}${state.keyDialog ? keyDialogPanel() : ""}${state.commandsOpen ? commandsDialog() : ""}</div>
 </div>
 </section>`;
       const keyInput = root.querySelector("#hub-key");
@@ -265,6 +269,19 @@ window.DevCoordinatorAgentHub = (() => {
               );
         target?.focus({ preventScroll: true });
       }
+      const commands = root.querySelector(".hub-commands-dialog");
+      if (commands) {
+        commands.showModal();
+        commands.addEventListener("cancel", (event) => {
+          event.preventDefault();
+          closeCommands();
+        });
+        const target =
+          restored && commands.contains(restored)
+            ? restored
+            : root.querySelector("#hub-commands-title");
+        target?.focus({ preventScroll: true });
+      }
       if (scroll.y !== window.scrollY || scroll.x !== window.scrollX)
         window.scrollTo(scroll.x, scroll.y);
       if (
@@ -287,7 +304,7 @@ window.DevCoordinatorAgentHub = (() => {
             : `<p class="hub-note">${h("keyAdmin")}</p>`
         }
         <p class="hub-local-note">${h("keyLocal")} <button type="button" class="hub-link" data-hub-step="connect">${h("continue")}</button></p>
-        <button type="button" class="hub-link hub-public-link" data-hub-action="public-settings" aria-expanded="${state.publicOpen}">${icon("world")}${h("publicSettings")}</button>
+        <button type="button" class="hub-link hub-public-link" data-hub-action="public-settings" aria-expanded="${state.publicOpen}">${icon("world")}${h(administrator ? "publicSettings" : "viewPublicSettings")}</button>
         ${state.publicOpen ? publicPanel() : ""}`;
     }
 
@@ -403,10 +420,39 @@ window.DevCoordinatorAgentHub = (() => {
       ${snippet("registration", info.register)}${snippet("heartbeat", info.heartbeat)}<p class="hub-muted">${h("leaseHelp")}</p>
       <div class="hub-actions">${button("copy-instructions", "copyInstructions")}<button type="button" class="hub-button hub-primary" data-hub-step="rooms">${h("viewRooms")}</button>
 </div>
-      <details class="hub-details">
-<summary>${h("commands")}</summary>${snippet("discoverCommand", info.directory)}${snippet("roomCommand", info.room)}${snippet("sendCommand", info.send)}${snippet("pollCommand", info.receive)}${snippet("ackCommand", info.ack)}<p>${h("deliveryHelp")}</p>
-<p>${h("callbackHelp")}</p>
-</details>${directoryPanel()}`;
+      ${commandsButton()}${directoryPanel()}`;
+    }
+
+    function commandsButton() {
+      return `<button type="button" class="hub-button hub-command-trigger" id="hub-open-commands-${state.step}" data-hub-action="open-commands" aria-haspopup="dialog">${h("commands")}</button>`;
+    }
+
+    function commandsDialog() {
+      const info = connection();
+      const instructions =
+        state.step === "delivery"
+          ? snippet("pollCommand", info.receive) +
+            snippet("ackCommand", info.ack) +
+            snippet("discoverCommand", info.directory) +
+            snippet("roomCommand", info.room) +
+            snippet("sendCommand", info.send)
+          : snippet("discoverCommand", info.directory) +
+            snippet("roomCommand", info.room) +
+            snippet("sendCommand", info.send) +
+            snippet("pollCommand", info.receive) +
+            snippet("ackCommand", info.ack);
+      return `<dialog class="hub-commands-dialog" aria-labelledby="hub-commands-title">
+        <header><h2 id="hub-commands-title" tabindex="-1">${h("commands")}</h2>${button("close-commands", "closeCommands")}</header>
+        <div class="hub-command-content">${instructions}<p>${h("roomHelp")}</p><p>${h("deliveryHelp")}</p><p>${h("callbackHelp")}</p></div>
+      </dialog>`;
+    }
+
+    function closeCommands() {
+      state.commandsOpen = false;
+      render();
+      root
+        .querySelector(`#${CSS.escape(state.commandsTrigger)}`)
+        ?.focus({ preventScroll: true });
     }
 
     function toolbar() {
@@ -415,7 +461,7 @@ window.DevCoordinatorAgentHub = (() => {
 <option value="private"${state.space === "private" ? " selected" : ""}>${h("private")}</option>
 <option value="public"${state.space === "public" ? " selected" : ""}>${h("public")}</option>
 </select>
-</label>${button("refresh", state.loading ? "refreshing" : "refresh")}<span class="hub-muted" role="status">${state.updated ? h("updated", { date: date(state.updated) }) : h("loading")}</span>
+</label>${button("refresh", state.loading ? "refreshing" : "refresh")}${state.space === "public" ? `<span class="hub-space-status">${h(publicState())}</span>` : ""}<span class="hub-freshness hub-muted" role="status">${state.updated ? h("updated", { date: date(state.updated) }) : h("loading")}</span>
 </div>`;
     }
     function directoryPanel() {
@@ -441,67 +487,61 @@ window.DevCoordinatorAgentHub = (() => {
       }${state.agentNext ? button("load-agents", "moreAgents") : ""}</section>`;
     }
 
+    function roomSwitcher() {
+      return `<div class="hub-room-switcher"><label for="hub-room-select">${h("rooms")}</label>
+        <select id="hub-room-select" aria-label="${h("chooseRoomLabel")}">
+          <option value="" ${state.roomId ? "" : "selected"}>${h("chooseRoomLabel")}</option>
+          ${state.rooms.map((room) => `<option value="${escape(room.room_id)}" ${state.roomId === room.room_id ? "selected" : ""}>${escape(room.name)}</option>`).join("")}
+        </select>
+        ${state.roomNext ? button("load-rooms", "moreRooms") : ""}
+        ${!state.loaded.rooms ? `<p class="hub-empty">${h(state.loading ? "loading" : "unavailable")}</p>` : !state.rooms.length ? `<p class="hub-empty">${h("noRooms")}</p>` : ""}
+      </div>`;
+    }
+
     function roomsPanel() {
       const room = currentRoom();
-      return `<h2 id="hub-panel-title" tabindex="-1">${h(`${state.step}Title`)}</h2>${
-        state.step === "rooms"
-          ? `<p class="hub-lead">${h("roomHelp")}</p>
-<details class="hub-details">
-<summary>${h("createRoom")}</summary>${snippet("discoverCommand", connection().directory)}${snippet("roomCommand", connection().room)}${snippet("sendCommand", connection().send)}</details>`
-          : `<p class="hub-lead">${h("receiptHelp")}</p>
-<details class="hub-details">
-<summary>${h("commands")}</summary>${snippet("pollCommand", connection().receive)}${snippet("ackCommand", connection().ack)}<p>${h("deliveryHelp")}</p>
-<p>${h("callbackHelp")}</p>
-</details>`
-      }
-      ${toolbar()}${
-        state.step === "delivery" && administrator && state.activity
-          ? `<section class="hub-activity">
-<h3>${h("activityTitle")}</h3>
-<p>${h("activitySummary", state.activity)}</p>
-<p>${h("backlogSummary", state.activity)}</p>
-</section>`
-          : ""
-      }<div class="hub-conversations">
-<section class="hub-room-list" aria-label="${h("rooms")}">
-<h3>${h("rooms")}</h3>${
-        !state.loaded.rooms
-          ? `<p class="hub-muted">${h(state.loading ? "loading" : "unavailable")}</p>`
-          : !state.rooms.length
-            ? `<p class="hub-empty">${h("noRooms")}</p>`
-            : state.rooms
-                .map(
-                  (
-                    item,
-                  ) => `<button type="button" class="hub-room" data-hub-room="${dataAttributes(item.room_id)}" data-hub-action="select-room" data-id="${dataAttributes(item.room_id)}" ${state.roomId === item.room_id ? 'aria-current="true"' : ""}>
-<strong>${escape(item.name)}</strong>
-<span>${h("roomMembers", { count: item.member_count })}</span>
-<span class="hub-id">${escape(item.room_id)}</span>
-</button>`,
-                )
-                .join("")
-      }${state.roomNext ? button("load-rooms", "moreRooms") : ""}</section>
-      <section class="hub-conversation" aria-label="${h("messages")}">${
-        room
-          ? `<header class="hub-room-heading">
-<h3>${escape(room.name)}</h3>${administrator ? button("remove-room", "removeRoom", `data-id="${dataAttributes(room.room_id)}"`) : ""}</header>${messageList()}<form data-hub-reply>
-<label for="hub-reply">${h("reply")}</label>
-<textarea id="hub-reply" name="body" maxlength="32768" rows="4" placeholder="${h("replyPlaceholder")}" required>
-</textarea>
-${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(publicState()) })}</p>`}
-<div class="hub-actions">
-<button class="hub-button hub-primary" type="submit" data-hub-action="send" ${canReply() ? "" : "disabled"}>${h("send")}</button>
-</div>
-</form>`
-          : `<p class="hub-empty">${h("chooseRoom")}</p>`
-      }</section>
-</div>${
-        state.step === "rooms"
-          ? `<div class="hub-actions">
-<button type="button" class="hub-link" data-hub-step="delivery">${h("watchDelivery")}</button>
-</div>`
-          : ""
-      }${directoryPanel()}`;
+      return `${toolbar()}${roomSwitcher()}
+        <div class="hub-conversations">
+          <section class="hub-room-list" aria-label="${h("rooms")}">
+            <h3>${h("rooms")}</h3>
+            ${
+              !state.loaded.rooms
+                ? `<p class="hub-muted">${h(state.loading ? "loading" : "unavailable")}</p>`
+                : !state.rooms.length
+                  ? `<p class="hub-empty">${h("noRooms")}</p>`
+                  : state.rooms
+                      .map(
+                        (
+                          item,
+                        ) => `<button type="button" class="hub-room" data-hub-room="${dataAttributes(item.room_id)}" data-hub-action="select-room" data-id="${dataAttributes(item.room_id)}" ${state.roomId === item.room_id ? 'aria-current="true"' : ""}>
+                <strong>${escape(item.name)}</strong><span>${h("roomMembers", { count: item.member_count })}</span><span class="hub-id">${escape(item.room_id)}</span>
+              </button>`,
+                      )
+                      .join("")
+            }
+            ${state.roomNext ? button("load-rooms", "moreRooms") : ""}
+          </section>
+          <section class="hub-conversation" aria-label="${h("messages")}">
+            ${
+              room
+                ? `<header class="hub-room-heading"><h3>${escape(room.name)}</h3>${administrator ? button("remove-room", "removeRoom", `data-id="${dataAttributes(room.room_id)}"`) : ""}</header>
+              ${messageList()}
+              <form data-hub-reply><label for="hub-reply">${h("reply")}</label>
+                <textarea id="hub-reply" name="body" maxlength="32768" rows="4" placeholder="${h("replyPlaceholder")}" required></textarea>
+                ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(publicState()) })}</p>`}
+                <div class="hub-actions"><button class="hub-button hub-primary" type="submit" data-hub-action="send" ${canReply() ? "" : "disabled"}>${h("send")}</button></div>
+              </form>`
+                : `<p class="hub-empty">${h("chooseRoom")}</p>`
+            }
+          </section>
+        </div>
+        <section class="hub-monitor-help">
+          ${commandsButton()}
+          <p class="hub-muted">${h(state.step === "rooms" ? "roomHelp" : "receiptHelp")}</p>
+          ${state.step === "rooms" ? `<button type="button" class="hub-link" data-hub-step="delivery">${h("watchDelivery")}</button>` : ""}
+        </section>
+        ${state.step === "delivery" && administrator && state.activity ? `<section class="hub-activity"><h3>${h("activityTitle")}</h3><p>${h("activitySummary", state.activity)}</p><p>${h("backlogSummary", state.activity)}</p></section>` : ""}
+        ${directoryPanel()}`;
     }
 
     function messageList() {
@@ -519,6 +559,7 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
 <strong>${escape(message.sender?.display_name || t("consoleSender"))}</strong>
 <time datetime="${escape(message.created_at)}">${escape(date(message.created_at))}</time>
 </header>
+<p class="hub-receipt" data-hub-receipt>${counts ? (counts.recipients ? h("receipts", counts) : h("noRecipients")) : h("receiptsUnavailable")}</p>
 <p class="hub-message-body">${escape(message.body)}</p>${
                     message.attachments?.length
                       ? `<ul class="hub-files">${message.attachments
@@ -534,7 +575,7 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
                           .join("")}</ul>`
                       : ""
                   }<footer>
-<span class="hub-muted">${counts ? (counts.recipients ? h("receipts", counts) : h("noRecipients")) : h("receiptsUnavailable")}</span>${administrator ? button("remove-message", "removeMessage", `data-id="${dataAttributes(message.message_id)}"`) : ""}</footer>
+${administrator ? button("remove-message", "removeMessage", `data-id="${dataAttributes(message.message_id)}"`) : ""}</footer>
 </article>`;
                 })
                 .join("")
@@ -675,16 +716,18 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
       if (event.target.id === "hub-reply")
         state.drafts.set(draftKey(), event.target.value);
     }
-    function onDetailsToggle(event) {
-      const details = event.target;
-      if (!details.matches?.(".hub-details") || !details.open) return;
-      const heading = details.querySelector("h3");
-      if (heading) {
-        heading.tabIndex = -1;
-        heading.focus({ preventScroll: true });
-      }
+    function selectRoom(id) {
+      if (!id || !state.rooms.some((room) => room.room_id === id)) return;
+      state.roomId = id;
+      state.deliveries = [];
+      state.messageNext = null;
+      state.loaded.deliveries = false;
+      ++state.version;
+      updateRoute();
+      void busy(() => loadCollection("deliveries"));
     }
     function onChange(event) {
+      if (event.target.id === "hub-room-select") selectRoom(event.target.value);
       if (event.target.id === "hub-client") {
         state.client = event.target.value;
         render();
@@ -748,6 +791,16 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
       if (!target || !root.contains(target) || target.disabled) return;
       const action = target.dataset.hubAction;
       const id = target.dataset.id;
+      if (action === "open-commands") {
+        state.commandsOpen = true;
+        state.commandsTrigger = target.id;
+        render();
+        return;
+      }
+      if (action === "close-commands") {
+        closeCommands();
+        return;
+      }
       if (action === "send") return;
       if (action === "public-settings") {
         state.publicOpen = !state.publicOpen;
@@ -805,13 +858,7 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
         return;
       }
       if (action === "select-room") {
-        state.roomId = id;
-        state.deliveries = [];
-        state.messageNext = null;
-        state.loaded.deliveries = false;
-        ++state.version;
-        updateRoute();
-        void busy(() => loadCollection("deliveries"));
+        selectRoom(id);
         return;
       }
       if (action === "close-preview") {
@@ -1117,7 +1164,6 @@ ${canReply() ? "" : `<p class="hub-note">${h("publicUnavailable", { state: t(pub
     root.addEventListener("change", onChange);
     root.addEventListener("input", onInput);
     root.addEventListener("submit", onSubmit);
-    root.addEventListener("toggle", onDetailsToggle, true);
     render();
     await refresh();
     // Refresh is explicit so an operator reading a long conversation keeps its
