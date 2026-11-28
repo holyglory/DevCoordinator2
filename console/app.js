@@ -414,6 +414,7 @@ function setupTopNavigation() {
   });
   const desktop = window.matchMedia('(min-width: 1241px)');
   desktop.addEventListener('change', (event) => { if (event.matches) setOpen(false, false); });
+  toggle.disabled = false;
 }
 function lifecycleButtons(id, component, cls = 'btn btn-small', deploymentState = null) {
   const args = component ? { deployment_id: id, component } : { deployment_id: id };

@@ -17,14 +17,14 @@ const geometry=(primary,heading)=>[
 ];
 
 export function agentHubFormalConfig({root,base,theme,cookie,sourceBinding,playwrightModuleDir,roomId,emptyRoomId,publicRoomId,zeroRoomId,fileMessageId,firstRun=false,role='administrator'}) {
-  const reviewInputs=['console/agent-hub.js','console/agent-hub.css','console/app.js','console/index.html','console/app.css','console/design-system.css','console/locales/en/agent-hub.json'].map(file=>({path:file,kind:file.endsWith('.css')?'style':'ui-code'}));
+  const reviewInputs=['console/agent-hub.js','console/agent-hub.css','console/app.js','console/index.html','console/app.css','console/design-system.css','console/locales/en/agent-hub.json','console/vendor/pdfjs/pdf.min.mjs','console/vendor/pdfjs/pdf.worker.min.mjs',...['lock','world','info-circle','message-plus','folder','circle-check','database','alert-triangle','photo','settings'].map(name=>`console/icons/tabler/${name}.svg`)].map(file=>({path:file,kind:file.endsWith('.css')?'style':file.includes('/vendor/')||file.endsWith('.svg')?'asset':'ui-code'}));
   const journey={id:'agent-handoff',name:'Connect an agent and inspect its real communication handoff',frequencyPercent:100,risk:'high',rationale:'The Agent hub guides an administrator from access setup to durable delivery evidence.'};
   const target=(name,step,query='',shapeSelector='.hub-panel[aria-busy="false"]')=>({
     name:`hub-${name}-${theme}`,url:`${base}#/agent-hub?step=${step}${query}`,theme,sourceBinding,
     authProfile:role,
     reviewEnvironmentIdentity:'isolated-agent-hub-console-candidate',
     journeys:[journey],primaryJourney:journey.id,
-    regions:[{name:'Current handoff step',selector:'.hub-panel',role:'primary-content',journey:journey.id}],
+    regions:[{name:'Current handoff step',selector:'.hub-panel',role:'primary-content',journey:journey.id},{name:'Hub title and purpose',selector:'.hub-heading',role:'supporting'},{name:'Handoff step navigation',selector:'.hub-steps',role:'supporting'}],
     geometryAssertions:geometry('.hub-panel','#hub-panel-title'),
     waitFor:{selector:shapeSelector==='.hub-panel[aria-busy="false"]'?shapeSelector:`.hub-panel[aria-busy="false"] ${shapeSelector}`,renderFrames:2,timeoutMs:10000},reviewInputs,
     execution:{parallelSafe:true},
@@ -47,14 +47,16 @@ export function agentHubFormalConfig({root,base,theme,cookie,sourceBinding,playw
   const empty=target('empty-room','delivery',`&room=${emptyRoomId}`,'.hub-conversation .hub-empty');
   const zero=target('zero-recipients','delivery',`&room=${zeroRoomId}`,'[data-hub-delivery]');
   const publicDelivery=target('public-delivery','delivery',`&space=public&room=${publicRoomId}`,'[data-hub-delivery]');
+  for(const owner of [connect,rooms,delivery])owner.states.push({name:'agent-commands',actions:[{action:'focus',selector:'.hub-details > summary'},{action:'click',selector:'.hub-details > summary'}],waitFor:{selector:'.hub-details[open]',renderFrames:2},continuation:{kind:'in-page',anchor:'.hub-details > summary',focusWithin:'.hub-details',maxScrollDelta:8},fixtureDataShapes:[{id:'agent-commands',revision:'real-agent-hub-candidate-v1',conditionalDom:['.hub-details[open] .hub-instruction'],layoutEffect:'The actual expanded instruction controls reveal discovery, room, send, receive and acknowledgement examples for the selected connection path.'}]});
+  delivery.states.push({...delivery.states.find(state=>state.name==='attachment-preview'),name:'pdf-preview',actions:[{action:'click',selector:`[data-hub-delivery="${fileMessageId}"] .hub-files li:nth-child(2) [data-hub-action="preview"]`}],waitFor:{selector:'dialog.hub-preview[open] canvas',renderFrames:2},fixtureDataShapes:[{id:'pdf-canvas-preview',revision:'real-agent-hub-candidate-v1',conditionalDom:['dialog.hub-preview[open] canvas'],layoutEffect:'Verified persisted PDF bytes are rendered by the real bundled PDF worker to a safe first-page canvas.'}]});
   // Shared shell/type changes are sampled on one real populated rooms layout.
   // Transient credential/dialog states retain the actual phone and desktop
   // samples without multiplying an unrelated room-column transition.
-  const boundaryRooms={...rooms,name:`hub-layout-boundaries-${theme}`,states:[],breakpointProfile:{name:'hub-layout',breakpoints:[720,1100,1500],height:1058,baseViewport:'desktop'}};
+  const boundaryRooms={...rooms,name:`hub-layout-boundaries-${theme}`,states:[],breakpointProfile:{name:'hub-layout',breakpoints:[720,1100,1300,1500],height:1058,baseViewport:'desktop'}};
   const targets=firstRun?[{...key,name:`hub-first-run-${theme}`,states:[],fixtureDataShapes:[{id:'no-key-first-run',revision:'real-agent-hub-candidate-v1',conditionalDom:['[data-hub-action="generate-key"]'],layoutEffect:'A fresh isolated authority with no saved instance key renders the actual first-run Generate action.'}]}]:[key,connect,rooms,publicRooms,delivery,empty,zero,publicDelivery,...(role==='administrator'?[boundaryRooms]:[])];
   const viewports=[{name:'phone',device:'iPhone 13',colorScheme:theme},...(role==='administrator'?[{name:'intermediate',width:900,height:1024,colorScheme:theme}]:[]),{name:'desktop',width:1487,height:1058,colorScheme:theme},...(role==='administrator'?[{name:'wide',width:1920,height:1080,colorScheme:theme}]:[])];
   const requiredCoverage=targets.flatMap(t=>['base',...t.states.map(s=>s.name)].flatMap(state=>viewports.map(viewport=>({target:t.name,state,viewport:viewport.name}))));
-  if(!firstRun&&role==='administrator')for(const breakpoint of [720,1100,1500])for(const offset of [-1,0,1])requiredCoverage.push({target:boundaryRooms.name,state:'base',viewport:`hub-layout-${breakpoint}-${offset<0?'minus-1':offset>0?'plus-1':'at'}`,width:breakpoint+offset});
+  if(!firstRun&&role==='administrator')for(const breakpoint of [720,1100,1300,1500])for(const offset of [-1,0,1])requiredCoverage.push({target:boundaryRooms.name,state:'base',viewport:`hub-layout-${breakpoint}-${offset<0?'minus-1':offset>0?'plus-1':'at'}`,width:breakpoint+offset});
   const fixtureDataShapes=targets.flatMap(t=>[{name:'base',fixtureDataShapes:t.fixtureDataShapes},...t.states].flatMap(s=>(s.fixtureDataShapes||t.fixtureDataShapes).map(shape=>({...shape,id:`${t.name}-${s.name}-${shape.id}`,target:t.name,route:new URL(t.url).pathname+new URL(t.url).search,state:s.name}))));
   return {repoRoot:root,playwrightModuleDir,cookies:[cookie],authProfiles:[{name:role,url:targets[0].url,actions:[{action:'focus',selector:'#hub-panel-title'}],waitFor:{selector:'.hub-panel[aria-busy="false"]',renderFrames:2,timeoutMs:10000}}],targets,viewports,requiredCoverage,fixtureDataShapes,maxPageCount:256,screenshotMasks:[{selector:'[data-hub-secret]',reason:'The fixture instance key is a one-time credential and must never enter retained images'},{selector:'#who-email',reason:'Console identity is private'},{selector:'#workspace-root',reason:'Local filesystem paths are private'}]};
 }

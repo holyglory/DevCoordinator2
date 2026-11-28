@@ -57,7 +57,8 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
   let firstKey,secondKey,sender,recipient,expired,publicAgent,room,emptyRoom,publicRoom,zeroRoom,fileMessage,pendingMessage,ackedMessage,zeroMessage;
   await check('The normal Console menu reaches Agent hub',async()=>{
     await page.goto(`${base}#/health`);
-    await page.locator('#nav-toggle').click();
+    await page.locator('#nav-toggle:enabled').click();
+    await page.locator('#nav-toggle[aria-expanded="true"]').waitFor();
     await page.locator('#nav a[data-view="agent-hub"]').click();
     await page.locator('.hub-step[data-hub-step="key"][aria-current="step"]').waitFor();
     assert.match(page.url(),/#\/agent-hub/);
