@@ -17,7 +17,15 @@ const geometry=(primary,heading)=>[
 ];
 
 export function agentHubFormalConfig({root,base,theme,cookie,sourceBinding,playwrightModuleDir,roomId,emptyRoomId,publicRoomId,zeroRoomId,fileMessageId,firstRun=false,role='administrator'}) {
-  const reviewInputs=['console/agent-hub.js','console/agent-hub.css','console/app.js','console/index.html','console/app.css','console/design-system.css','console/locales/en/agent-hub.json','console/vendor/pdfjs/pdf.min.mjs','console/vendor/pdfjs/pdf.worker.min.mjs',...['lock','world','info-circle','message-plus','folder','circle-check','database','alert-triangle','photo','settings'].map(name=>`console/icons/tabler/${name}.svg`)].map(file=>({path:file,kind:file.endsWith('.css')?'style':file.includes('/vendor/')||file.endsWith('.svg')?'asset':'ui-code'}));
+  const reviewInputs=[
+    'console/agent-hub.js','console/agent-hub.css','console/locales/en/agent-hub.json',
+    'console/index.html','console/bootstrap.mjs','console/app.js','console/app.css',
+    'console/workspace.js','console/workspace.css','console/design-system.css','console/theme.js',
+    'console/i18n.mjs','console/i18n-core.mjs','console/i18n.css',
+    'console/locales/manifest.json','console/locales/en/common.json','console/locales/en/shell.json',
+    'console/fonts/InterVariable.woff2','console/vendor/pdfjs/pdf.min.mjs','console/vendor/pdfjs/pdf.worker.min.mjs',
+    ...['lock','world','info-circle','message-plus','folder','circle-check','database','alert-triangle','photo','settings'].map(name=>`console/icons/tabler/${name}.svg`),
+  ].map(file=>({path:file,kind:file.endsWith('.css')?'style':file.includes('/vendor/')||file.includes('/fonts/')||file.endsWith('.svg')?'asset':'ui-code'}));
   const journey={id:'agent-handoff',name:'Connect an agent and inspect its real communication handoff',frequencyPercent:100,risk:'high',rationale:'The Agent hub guides an administrator from access setup to durable delivery evidence.'};
   const target=(name,step,query='',shapeSelector='.hub-panel[aria-busy="false"]')=>({
     name:`hub-${name}-${theme}`,url:`${base}#/agent-hub?step=${step}${query}`,theme,sourceBinding,
@@ -52,13 +60,16 @@ export function agentHubFormalConfig({root,base,theme,cookie,sourceBinding,playw
   // Shared shell/type changes are sampled on one real populated rooms layout.
   // Transient credential/dialog states retain the actual phone and desktop
   // samples without multiplying an unrelated room-column transition.
-  const boundaryRooms={...rooms,name:`hub-layout-boundaries-${theme}`,states:[],breakpointProfile:{name:'hub-layout',breakpoints:[720,1100,1300,1500],height:1058,baseViewport:'desktop'}};
+  const breakpoints=[600,720,900,1100,1300,1500];
+  const boundaryRooms={...rooms,name:`hub-layout-boundaries-${theme}`,states:[],breakpointProfile:{name:'hub-layout',breakpoints,height:1058,baseViewport:'desktop'}};
   const targets=firstRun?[{...key,name:`hub-first-run-${theme}`,states:[],fixtureDataShapes:[{id:'no-key-first-run',revision:'real-agent-hub-candidate-v1',conditionalDom:['[data-hub-action="generate-key"]'],layoutEffect:'A fresh isolated authority with no saved instance key renders the actual first-run Generate action.'}]}]:[key,connect,rooms,publicRooms,delivery,empty,zero,publicDelivery,...(role==='administrator'?[boundaryRooms]:[])];
   const viewports=[{name:'phone',device:'iPhone 13',colorScheme:theme},...(role==='administrator'?[{name:'intermediate',width:900,height:1024,colorScheme:theme}]:[]),{name:'desktop',width:1487,height:1058,colorScheme:theme},...(role==='administrator'?[{name:'wide',width:1920,height:1080,colorScheme:theme}]:[])];
   const requiredCoverage=targets.flatMap(t=>['base',...t.states.map(s=>s.name)].flatMap(state=>viewports.map(viewport=>({target:t.name,state,viewport:viewport.name}))));
-  if(!firstRun&&role==='administrator')for(const breakpoint of [720,1100,1300,1500])for(const offset of [-1,0,1])requiredCoverage.push({target:boundaryRooms.name,state:'base',viewport:`hub-layout-${breakpoint}-${offset<0?'minus-1':offset>0?'plus-1':'at'}`,width:breakpoint+offset});
+  if(!firstRun&&role==='administrator')for(const breakpoint of breakpoints)for(const offset of [-1,0,1])requiredCoverage.push({target:boundaryRooms.name,state:'base',viewport:`hub-layout-${breakpoint}-${offset<0?'minus-1':offset>0?'plus-1':'at'}`,width:breakpoint+offset});
   const fixtureDataShapes=targets.flatMap(t=>[{name:'base',fixtureDataShapes:t.fixtureDataShapes},...t.states].flatMap(s=>(s.fixtureDataShapes||t.fixtureDataShapes).map(shape=>({...shape,id:`${t.name}-${s.name}-${shape.id}`,target:t.name,route:new URL(t.url).pathname+new URL(t.url).search,state:s.name}))));
-  return {repoRoot:root,playwrightModuleDir,cookies:[cookie],authProfiles:[{name:role,url:targets[0].url,actions:[],waitFor:{selector:'.hub-panel[aria-busy="false"]',renderFrames:2,timeoutMs:10000}}],targets,viewports,requiredCoverage,fixtureDataShapes,maxPageCount:256,screenshotMasks:[{selector:'[data-hub-secret]',reason:'The fixture instance key is a one-time credential and must never enter retained images'},{selector:'#who-email',reason:'Console identity is private'},{selector:'#workspace-root',reason:'Local filesystem paths are private'}]};
+  // Cookies authenticate the role. The required bootstrap action uses the
+  // stable document body while the application replaces its loading panel.
+  return {repoRoot:root,playwrightModuleDir,cookies:[cookie],authProfiles:[{name:role,url:targets[0].url,actions:[{action:'focus',selector:'body'}],waitFor:{selector:'.hub-panel[aria-busy="false"]',renderFrames:2,timeoutMs:10000}}],targets,viewports,requiredCoverage,fixtureDataShapes,maxPageCount:256,screenshotMasks:[{selector:'[data-hub-secret]',reason:'The fixture instance key is a one-time credential and must never enter retained images'},{selector:'#who-email',reason:'Console identity is private'},{selector:'#workspace-root',reason:'Local filesystem paths are private'}]};
 }
 
 export async function verifyAgentHubFormal(options) {
