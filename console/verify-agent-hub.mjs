@@ -18,6 +18,7 @@ export function fixturePdf() {
 
 export async function verifyAgentHub({page,browser,base,call,request,cookieFor,out,root,temporary,setOffline}) {
   const checks=[], secrets=[];
+  let credentialCaptureAllowed=true;
   const retainSecret=value=>{if(value)secrets.push(value);return value;};
   const redact=value=>secrets.reduce((text,secret)=>text.replaceAll(secret,'[REDACTED]'),String(value));
   const masks=()=>[page.locator('[data-hub-secret]'),page.locator('#who-email'),page.locator('#workspace-root')];
@@ -28,7 +29,7 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
       const filename=`hub-failure-${checks.length}.log`;
       await fs.writeFile(path.join(out,filename),redact(error.stack||error));
       // Never retain DOM dumps, traces, request/response bodies or entered keys.
-      await page.screenshot({path:path.join(out,`${filename}.png`),fullPage:true,mask:masks()}).catch(()=>{});
+      if(credentialCaptureAllowed)await page.screenshot({path:path.join(out,`${filename}.png`),fullPage:true,mask:masks()}).catch(()=>{});
       checks.push({name,status:'failed',duration_ms:Date.now()-start,evidence:filename});
       // A failed modal case must not block independent later assertions.
       const close=page.locator('dialog[open] [data-hub-action="close-preview"]');
@@ -67,6 +68,8 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     await page.locator('.hub-panel[aria-busy="false"]').waitFor();
   };
   const privateKeyCapture=async(key,label)=>{
+    // A failing privacy check must never create an untrusted failure screenshot.
+    credentialCaptureAllowed=false;
     const guard=await page.evaluate(secret=>{
       const elements=[...document.querySelectorAll('*')];if(elements.length>4000)throw new Error('Key guard DOM bound exceeded');
       const field=document.querySelector('[data-hub-key-value]');
@@ -88,6 +91,7 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     },{png:bytes.toString('base64'),regions});
     assert.equal(pixels[0].masked,pixels[0].samples,'Screenshot masks the entire key field');
     assert.ok(pixels.slice(1).every(region=>region.masked<region.samples),'Screenshot retains title, instructions and both key actions');
+    credentialCaptureAllowed=true;
     await fs.writeFile(path.join(out,`key-${label}-redacted.png`),bytes);
     await fs.writeFile(path.join(out,`key-${label}-guard.json`),JSON.stringify({guard,fieldRedacted:true,visibleControls:selectors.length},null,2));
   };
@@ -159,9 +163,9 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     await page.locator(action('generate-key')).click();
     await page.locator('[data-hub-key-value]').waitFor();
     firstKey=retainSecret(await page.locator('[data-hub-key-value]').evaluate(el=>el.value||el.textContent));
+    await privateKeyCapture(firstKey,'initial-phone');
     assert.ok(await page.evaluate(position=>Math.abs(scrollY-position)<=8,scroll),'Initial phone reveal preserves document position');
     assert.equal(await page.evaluate(()=>document.activeElement?.id),'hub-key');
-    await privateKeyCapture(firstKey,'initial-phone');
     assert.ok(firstKey.length>=32,'A key was generated');
     await page.locator(action('copy-key')).click();
     await page.locator('.hub-notice').filter({hasText:/copied/i}).waitFor();
@@ -481,6 +485,7 @@ export async function verifyAgentHub({page,browser,base,call,request,cookieFor,o
     assert.equal(await page.locator('[data-hub-secret]').count(),0);
   });
   if(process.env.AGENT_HUB_FORMAL==='1')await check('Fresh complete formal Agent hub matrix',async()=>{
+    assert.ok(credentialCaptureAllowed,'Formal captures are blocked after an unsuccessful credential privacy check');
     await verifyAgentHubFormal({base,root,out,temporary,browser,cookieFor,roomId:room.room_id,emptyRoomId:emptyRoom.room_id,publicRoomId:publicRoom.room_id,zeroRoomId:zeroRoom.room_id,fileMessageId:fileMessage.message_id});
   });
   // Verify every textual artifact produced by this extension is credential-free.
