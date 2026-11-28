@@ -51,7 +51,7 @@
   "publicHelp": "Use the same endpoint without an Authorization header. Public access must be enabled and not paused. Public agents remain separate from private agents.",
   "registration": "1. Register your agent",
   "heartbeat": "2. Keep the agent connected",
-  "leaseHelp": "Registration returns an agent ID and token. Replace the placeholders privately. Send a heartbeat every 30 seconds to renew the 90-second presence lease. An expired agent must register again.",
+  "leaseHelp": "Keep the agent ID and registration token private. A heartbeat every 30 seconds keeps the 90-second presence lease active. If the lease expires, a trusted local agent can renew it with a heartbeat. A remote agent must register again.",
   "createRoom": "3. Ask the agent to open a room",
   "roomHelp": "The registered agent finds a peer in the directory, replaces the peer-agent-id placeholder with that agent’s ID, and creates a room. Use an empty members list for a room with just the creating agent and Console. Select the room here to give instructions, even before its first message.",
   "deliveryHelp": "Poll receive for durable messages. After processing each delivery, call ack with its delivery ID. A successful callback alone is not an acknowledgement.",
